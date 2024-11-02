@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-   "log"
+	"log"
+	"regexp"
+	"strings"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -43,6 +45,13 @@ func registerRoutes(r *gin.Engine) {
     // CARGO
     r.POST("/cargo_delivery", cargoDelivery)
     r.POST("/register_mailer", registerMail)
+}
+
+// Define a sanitizeInput function
+func sanitizeInput(input string) string {
+    input = strings.TrimSpace(input) // Remove leading/trailing whitespace
+    re := regexp.MustCompile(`[^\w@.-]`)
+    return re.ReplaceAllString(input, "") // Remove unwanted characters
 }
 
 func loadedCommand(c *gin.Context) {
@@ -124,6 +133,9 @@ func registerUser(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "Username and password are required"})
         return
     }
+    // Sanitize username only
+    username = sanitizeInput(username)
+    // Do not sanitize password
 
     var user User
     if err := db.Where("username = ?", username).First(&user).Error; err == nil {
@@ -152,6 +164,9 @@ func login(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "Username and password are required"})
         return
     }
+    // Sanitize username only
+    username = sanitizeInput(username)
+    // Do not sanitize password
 
     var user User
     if err := db.Where("username = ?", username).First(&user).Error; err != nil {
@@ -187,6 +202,9 @@ func registerDevice(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and secret key are required"})
         return
     }
+    // Sanitize inputs
+    espID = sanitizeInput(espID)
+    espSecretKey = sanitizeInput(espSecretKey)
 
     var device ESPDevice
     if err := db.Where("esp_id = ?", espID).First(&device).Error; err == nil {
@@ -212,6 +230,9 @@ func removeDevice(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and secret key are required"})
         return
     }
+    // Sanitize inputs
+    espID = sanitizeInput(espID)
+    espSecretKey = sanitizeInput(espSecretKey)
 
     // Your logic to find and delete the device
     var device ESPDevice
@@ -237,6 +258,9 @@ func command(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and command are required"})
         return
     }
+    // Sanitize inputs
+    espID = sanitizeInput(espID)
+    commandText = sanitizeInput(commandText)
 
     var device ESPDevice
     if err := db.Where("esp_id = ?", espID).First(&device).Error; err != nil {
@@ -261,6 +285,9 @@ func getCommand(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and secret key are required"})
         return
     }
+    // Sanitize inputs
+    espID = sanitizeInput(espID)
+    espSecretKey = sanitizeInput(espSecretKey)
 
     var device ESPDevice
     if err := db.Where("esp_id = ? AND esp_secret_key = ?", espID, espSecretKey).First(&device).Error; err != nil {
@@ -402,8 +429,12 @@ func cargoDelivery(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"error": "ESP ID, delivery key, and encryption password are required"})
         return
     }
+    // Sanitize inputs
+    espID = sanitizeInput(espID)
+    deliveryKey = sanitizeInput(deliveryKey)
+    encryptionPassword = sanitizeInput(encryptionPassword)
 
-    file, header, err := c.Request.FormFile("file")
+    file, _, err := c.Request.FormFile("file")
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": "File upload failed", "details": err.Error()})
         return
@@ -411,8 +442,9 @@ func cargoDelivery(c *gin.Context) {
     defer file.Close()
 
     uniqueID := getNextID()
-    nodeIdentifier := "node1" // Node identifier
-    fileName := fmt.Sprintf("%s-%d-%s", nodeIdentifier, uniqueID, header.Filename)
+    nodeIdentifier := "node1"
+    // Generate a safe filename
+    fileName := fmt.Sprintf("%s-%d", nodeIdentifier, uniqueID)
     outputDir := "cargo_files"
     if _, err := os.Stat(outputDir); os.IsNotExist(err) {
         err := os.Mkdir(outputDir, 0755)
@@ -435,9 +467,10 @@ func cargoDelivery(c *gin.Context) {
         return
     }
 
+    // Update file metadata
     fileMetadata := FileMetadata{
         FileName:           fileName,
-        OriginalFileName:   header.Filename,
+        OriginalFileName:   "", // Exclude user-provided filename
         FilePath:           outputPath,
         EspID:              espID,
         DeliveryKey:        deliveryKey,
@@ -462,9 +495,16 @@ func cargoDelivery(c *gin.Context) {
 func getNextID() int {
     idMutex.Lock()
     defer idMutex.Unlock()
-    // Simulate persisting idCounter in a database
-    idCounter++
-    return idCounter
+    // Persist idCounter in the database
+    var counter Counter
+    if err := db.First(&counter).Error; err != nil {
+        counter.Value = 1
+        db.Create(&counter)
+    } else {
+        counter.Value++
+        db.Save(&counter)
+    }
+    return counter.Value
 }
 
 func saveFileMetadataToDatabase(fileName, originalFileName, filePath, espID, deliveryKey, encryptionPassword string) error {
@@ -494,6 +534,10 @@ func registerMail(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID, delivery key, and encryption password are required"})
         return
     }
+    // Sanitize inputs
+    espID = sanitizeInput(espID)
+    deliveryKey = sanitizeInput(deliveryKey)
+    encryptionPassword = sanitizeInput(encryptionPassword)
 
     var device ESPDevice
     if err := db.Where("esp_id = ?", espID).First(&device).Error; err == nil {
@@ -619,6 +663,9 @@ func authenticate(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
         return
     }
+    // Sanitize inputs
+    login.Username = sanitizeInput(login.Username)
+    login.Password = sanitizeInput(login.Password)
 
     var user User
     if err := db.Where("username = ?", login.Username).First(&user).Error; err != nil {
