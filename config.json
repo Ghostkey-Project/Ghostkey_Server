@@ -1,7 +1,6 @@
 {
     "server_interface": ":5000",
     "gossip_nodes": [
-        "https://node1.example.com",
-        "https://node2.example.com"
+
     ]
 }

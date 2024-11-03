@@ -96,8 +96,8 @@ func gossip() {
 
 	// Select a random node from the configured gossip nodes
 	targetNode := config.GossipNodes[rand.Intn(len(config.GossipNodes))]
-
 	var localVersionVector VersionVector
+	
 	// Fetch the local version vector
 	db.Model(&Command{}).Pluck("updated_at", &localVersionVector)
 
