@@ -21,32 +21,81 @@ import (
 	"gorm.io/gorm"
 )
 
+// authRequired checks for either session cookie or Basic Auth
+func authRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// First check for session authentication
+		session := sessions.Default(c)
+		userID := session.Get("user_id")
+		if userID != nil {
+			c.Set("user_id", userID)
+			c.Next()
+			return
+		}
+
+		// If no session, check for Basic Auth
+		username, password, hasAuth := c.Request.BasicAuth()
+		if hasAuth {
+			// Sanitize input
+			username = sanitizeInput(username)
+			
+			// Verify credentials
+			var user User
+			if err := db.Where("username = ?", username).First(&user).Error; err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+				c.Abort()
+				return
+			}
+
+			if !user.CheckPassword(password) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+				c.Abort()
+				return
+			}
+
+			// Set user ID in context
+			c.Set("user_id", user.ID)
+			c.Next()
+			return
+		}
+
+		// No valid authentication method found
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		c.Abort()
+	}
+}
+
 // registerRoutes sets up all the API endpoints for the server
 func registerRoutes(r *gin.Engine) {
-	// User routes
-	r.POST("/register_user", registerUser) // Endpoint for user registration
-	r.POST("/login", login)                // Endpoint for user login
-	r.POST("/logout", logout)              // Endpoint for user logout
+	// Public routes (no authentication required)
+	r.POST("/register_user", registerUser)
+	r.POST("/login", login)
 
-	// Device routes
-	r.POST("/register_device", registerDevice) // Endpoint to register a new device
-	r.DELETE("/remove_device", removeDevice)   // Endpoint to remove a device
+	// Protected routes (authentication required)
+	authenticated := r.Group("/")
+	authenticated.Use(authRequired())
+	{
+		authenticated.POST("/logout", logout)
 
-	// Command routes
-	r.POST("/loaded_command", loadedCommand)       // Endpoint to load commands to a device
-	r.GET("/get_loaded_command", getLoadedCommand) // Endpoint to get loaded commands for a device
-	r.POST("/command", command)                    // Endpoint to add a command for a device
-	r.GET("/get_command", getCommand)              // Endpoint for devices to retrieve the next command
-	r.POST("/remove_command", removeCommand)       // Endpoint to remove a command
-	r.GET("/get_all_commands", getAllCommands)     // Endpoint to get all commands for a device
+		// Device routes
+		authenticated.POST("/register_device", registerDevice)
+		authenticated.DELETE("/remove_device", removeDevice)
 
-	// Active boards route
-	// [1]:Remuve r.GET("/last_request_time", lastRequestTime)
-	r.GET("/active_boards", getActiveBoards) // Endpoint to get a list of active devices
+		// Command routes
+		authenticated.POST("/loaded_command", loadedCommand)
+		authenticated.GET("/get_loaded_command", getLoadedCommand)
+		authenticated.POST("/command", command)
+		authenticated.GET("/get_command", getCommand)
+		authenticated.POST("/remove_command", removeCommand)
+		authenticated.GET("/get_all_commands", getAllCommands)
 
-	// CARGO routes
-	r.POST("/cargo_delivery", cargoDelivery) // Endpoint to handle file delivery from devices
-	r.POST("/register_mailer", registerMail) // Endpoint to register a mailer device
+		// Active boards route
+		authenticated.GET("/active_boards", getActiveBoards)
+
+		// CARGO routes
+		authenticated.POST("/cargo_delivery", cargoDelivery)
+		authenticated.POST("/register_mailer", registerMail)
+	}
 }
 
 // sanitizeInput cleans the input string to prevent injection attacks
@@ -414,10 +463,6 @@ func getAllCommands(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"commands": commandList})
 }
-
-// [1]:Remuve func lastRequestTime(c *gin.Context) {
-// [1]:Remuve     // ...existing code...
-// [1]:Remuve }
 
 // getActiveBoards returns a list of devices that have been active within the last 2 minutes
 func getActiveBoards(c *gin.Context) {
