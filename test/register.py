@@ -53,7 +53,7 @@ def register_board(server_url, cookies_file, start_id, end_id, output_file):
 
 # Example usage:
 if __name__ == "__main__":
-    server_url = 'http://127.0.0.1:5000'
+    server_url = 'http://127.0.0.1:5001'
     cookies_file = 'cookies.txt'  # Adjust path if necessary
     start_id = 1
     end_id = 100000
