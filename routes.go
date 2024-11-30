@@ -24,21 +24,21 @@ import (
 // registerRoutes sets up all the API endpoints for the server
 func registerRoutes(r *gin.Engine) {
 	// User routes
-	r.POST("/register_user", registerUser)   // Endpoint for user registration
-	r.POST("/login", login)                  // Endpoint for user login
-	r.POST("/logout", logout)                // Endpoint for user logout
+	r.POST("/register_user", registerUser) // Endpoint for user registration
+	r.POST("/login", login)                // Endpoint for user login
+	r.POST("/logout", logout)              // Endpoint for user logout
 
 	// Device routes
 	r.POST("/register_device", registerDevice) // Endpoint to register a new device
 	r.DELETE("/remove_device", removeDevice)   // Endpoint to remove a device
 
 	// Command routes
-	r.POST("/loaded_command", loadedCommand)        // Endpoint to load commands to a device
-	r.GET("/get_loaded_command", getLoadedCommand)  // Endpoint to get loaded commands for a device
-	r.POST("/command", command)                     // Endpoint to add a command for a device
-	r.GET("/get_command", getCommand)               // Endpoint for devices to retrieve the next command
-	r.POST("/remove_command", removeCommand)        // Endpoint to remove a command
-	r.GET("/get_all_commands", getAllCommands)      // Endpoint to get all commands for a device
+	r.POST("/loaded_command", loadedCommand)       // Endpoint to load commands to a device
+	r.GET("/get_loaded_command", getLoadedCommand) // Endpoint to get loaded commands for a device
+	r.POST("/command", command)                    // Endpoint to add a command for a device
+	r.GET("/get_command", getCommand)              // Endpoint for devices to retrieve the next command
+	r.POST("/remove_command", removeCommand)       // Endpoint to remove a command
+	r.GET("/get_all_commands", getAllCommands)     // Endpoint to get all commands for a device
 
 	// Active boards route
 	// [1]:Remuve r.GET("/last_request_time", lastRequestTime)
