@@ -70,6 +70,7 @@ func registerRoutes(r *gin.Engine) {
 	// Public routes (no authentication required)
 	r.POST("/register_user", registerUser)
 	r.POST("/login", login)
+	r.GET("/get_command", getCommand)
 
 	// Protected routes (authentication required)
 	authenticated := r.Group("/")
@@ -85,7 +86,6 @@ func registerRoutes(r *gin.Engine) {
 		authenticated.POST("/loaded_command", loadedCommand)
 		authenticated.GET("/get_loaded_command", getLoadedCommand)
 		authenticated.POST("/command", command)
-		authenticated.GET("/get_command", getCommand)
 		authenticated.POST("/remove_command", removeCommand)
 		authenticated.GET("/get_all_commands", getAllCommands)
 
