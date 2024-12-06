@@ -71,6 +71,7 @@ func registerRoutes(r *gin.Engine) {
 	r.POST("/register_user", registerUser)
 	r.POST("/login", login)
 	r.GET("/get_command", getCommand)
+	r.POST("/cargo_delivery", cargoDelivery)
 
 	// Protected routes (authentication required)
 	authenticated := r.Group("/")
@@ -93,7 +94,6 @@ func registerRoutes(r *gin.Engine) {
 		authenticated.GET("/active_boards", getActiveBoards)
 
 		// CARGO routes
-		authenticated.POST("/cargo_delivery", cargoDelivery)
 		authenticated.POST("/register_mailer", registerMail)
 	}
 }
@@ -521,7 +521,7 @@ func cargoDelivery(c *gin.Context) {
 	encryptionPassword = sanitizeInput(encryptionPassword)
 
 	// Retrieve the file from the form data
-	file, _, err := c.Request.FormFile("file")
+	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File upload failed", "details": err.Error()})
 		return
@@ -563,7 +563,7 @@ func cargoDelivery(c *gin.Context) {
 	// Update file metadata and save to database
 	fileMetadata := FileMetadata{
 		FileName:           fileName,
-		OriginalFileName:   "", // Exclude user-provided filename
+		OriginalFileName:   header.Filename,
 		FilePath:           outputPath,
 		EspID:              espID,
 		DeliveryKey:        deliveryKey,
@@ -574,10 +574,10 @@ func cargoDelivery(c *gin.Context) {
 		return
 	}
 
-	// Send file to Depo server
-	err = sendFileToDepo(outputPath, fileName, espID, deliveryKey, encryptionPassword)
+	// Send file to Storage server
+	err = sendFileToStorage(outputPath, header.Filename, espID, deliveryKey, encryptionPassword)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deliver file to Depo server", "details": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deliver file to Storage server", "details": err.Error()})
 		return
 	}
 
@@ -660,8 +660,8 @@ func registerMail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Device registered successfully"})
 }
 
-// sendFileToDepo sends the file to the Depo server
-func sendFileToDepo(filePath, fileName, espID, deliveryKey, encryptionPassword string) error {
+// sendFileToStorage sends the file to the Storage server
+func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPassword string) error {
 	// Open the file to send
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -673,7 +673,7 @@ func sendFileToDepo(filePath, fileName, espID, deliveryKey, encryptionPassword s
 	writer := multipart.NewWriter(body)
 
 	// Add file to the form
-	part, err := writer.CreateFormFile("file", filepath.Base(fileName))
+	part, err := writer.CreateFormFile("file", fileName)
 	if err != nil {
 		return err
 	}
@@ -692,7 +692,7 @@ func sendFileToDepo(filePath, fileName, espID, deliveryKey, encryptionPassword s
 		return err
 	}
 
-	// Create POST request to Depo server
+	// Create POST request to Storage server
 	req, err := http.NewRequest("POST", "http://localhost:6000/upload_file", body)
 	if err != nil {
 		return err
@@ -715,7 +715,7 @@ func sendFileToDepo(filePath, fileName, espID, deliveryKey, encryptionPassword s
 
 	// Check for successful response
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to upload file to Depo server: %s", string(respBody))
+		return fmt.Errorf("failed to upload file to Storage server: %s", string(respBody))
 	}
 
 	return nil
