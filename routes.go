@@ -913,8 +913,26 @@ func startFileDeliveryService() {
 	}()
 }
 
+// isStorageServerOnline checks if the storage server is responding
+func isStorageServerOnline() bool {
+	// Try a simple HEAD request to check if server is up
+	resp, err := http.Head("http://localhost:6000/health")
+	if err != nil {
+		log.Printf("Storage server appears to be offline: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 // retryPendingFiles attempts to deliver any pending files to the storage server
 func retryPendingFiles() {
+	// First check if storage server is online
+	if !isStorageServerOnline() {
+		log.Printf("Storage server is offline, skipping file delivery attempts")
+		return
+	}
+
 	var pendingFiles []FileMetadata
 	
 	// Find all pending files
@@ -935,12 +953,16 @@ func retryPendingFiles() {
 		// Attempt to send file
 		err := sendFileToStorage(file.FilePath, file.OriginalFileName, file.EspID, file.DeliveryKey, file.EncryptionPassword)
 		if err != nil {
-			file.RetryCount++
-			if file.RetryCount >= MaxRetryAttempts {
-				file.Status = StatusFailed
-				log.Printf("File %s failed to deliver after %d attempts", file.FilePath, MaxRetryAttempts)
+			log.Printf("Failed to deliver file %s: %v", file.FilePath, err)
+			// Don't increment retry count if server becomes unreachable
+			if isStorageServerOnline() {
+				file.RetryCount++
+				if file.RetryCount >= MaxRetryAttempts {
+					file.Status = StatusFailed
+					log.Printf("File %s failed to deliver after %d attempts", file.FilePath, MaxRetryAttempts)
+				}
+				db.Save(&file)
 			}
-			db.Save(&file)
 			continue
 		}
 
