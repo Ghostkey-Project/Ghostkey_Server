@@ -21,6 +21,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// Constants for file delivery status and retry settings
+const (
+	StatusPending   = "pending"
+	StatusCompleted = "completed"
+	StatusFailed    = "failed"
+	MaxRetryAttempts = 5
+	RetryInterval   = 1 * time.Minute
+)
+
 // authRequired checks for either session cookie or Basic Auth
 func authRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -568,20 +577,39 @@ func cargoDelivery(c *gin.Context) {
 		EspID:              espID,
 		DeliveryKey:        deliveryKey,
 		EncryptionPassword: encryptionPassword,
+		Status:            StatusPending,
+		RetryCount:        0,
 	}
 	if err := db.Create(&fileMetadata).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
 		return
 	}
 
-	// Send file to Storage server
+	// Try immediate delivery
 	err = sendFileToStorage(outputPath, header.Filename, espID, deliveryKey, encryptionPassword)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deliver file to Storage server", "details": err.Error()})
+		// Log the error but don't delete the file - the background service will retry
+		log.Printf("Warning: Failed to deliver file to Storage server: %v. Will retry later.", err)
+		c.JSON(http.StatusOK, gin.H{
+			"message": "File received successfully, will attempt delivery to storage server",
+			"status":  StatusPending,
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "File delivered successfully"})
+	// Success! Update status and delete local file
+	fileMetadata.Status = StatusCompleted
+	db.Save(&fileMetadata)
+	
+	err = os.Remove(outputPath)
+	if err != nil {
+		log.Printf("Warning: Failed to delete local file %s: %v", outputPath, err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "File delivered successfully",
+		"status":  StatusCompleted,
+	})
 }
 
 // getNextID safely increments and returns the next unique ID
@@ -873,4 +901,53 @@ func receiveGossip(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// startFileDeliveryService starts the background service that retries pending file deliveries
+func startFileDeliveryService() {
+	go func() {
+		for {
+			time.Sleep(RetryInterval)
+			retryPendingFiles()
+		}
+	}()
+}
+
+// retryPendingFiles attempts to deliver any pending files to the storage server
+func retryPendingFiles() {
+	var pendingFiles []FileMetadata
+	
+	// Find all pending files
+	if err := db.Where("status = ?", StatusPending).Find(&pendingFiles).Error; err != nil {
+		log.Printf("Error fetching pending files: %v", err)
+		return
+	}
+
+	for _, file := range pendingFiles {
+		// Check if file still exists
+		if _, err := os.Stat(file.FilePath); os.IsNotExist(err) {
+			log.Printf("File %s no longer exists, marking as failed", file.FilePath)
+			file.Status = StatusFailed
+			db.Save(&file)
+			continue
+		}
+
+		// Attempt to send file
+		err := sendFileToStorage(file.FilePath, file.OriginalFileName, file.EspID, file.DeliveryKey, file.EncryptionPassword)
+		if err != nil {
+			file.RetryCount++
+			if file.RetryCount >= MaxRetryAttempts {
+				file.Status = StatusFailed
+				log.Printf("File %s failed to deliver after %d attempts", file.FilePath, MaxRetryAttempts)
+			}
+			db.Save(&file)
+			continue
+		}
+
+		// Success! Delete the file and update the database
+		os.Remove(file.FilePath)
+		file.Status = StatusCompleted
+		db.Save(&file)
+		log.Printf("Successfully delivered pending file: %s", file.FilePath)
+	}
 }

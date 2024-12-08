@@ -60,6 +60,8 @@ type FileMetadata struct {
     EspID              string
     DeliveryKey        string
     EncryptionPassword string
+    Status             string // "pending", "completed", or "failed"
+    RetryCount         int    // Track number of retry attempts
 }
 type Counter struct {
     ID    uint `gorm:"primaryKey"`

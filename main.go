@@ -73,6 +73,9 @@ func main() {
 	// Start gossip protocol in a separate goroutine
 	go startGossip()
 
+	// Start the file delivery service
+	startFileDeliveryService()
+
 	// Run the Gin server on the configured interface
 	if err := r.Run(config.ServerInterface); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
