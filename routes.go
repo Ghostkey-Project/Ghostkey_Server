@@ -23,11 +23,11 @@ import (
 
 // Constants for file delivery status and retry settings
 const (
-	StatusPending   = "pending"
-	StatusCompleted = "completed"
-	StatusFailed    = "failed"
-	MaxRetryAttempts = 5
-	RetryInterval   = 1 * time.Minute
+	StatusPending    = "pending"           // Indicates a file is pending delivery
+	StatusCompleted  = "completed"         // Indicates a file was delivered successfully
+	StatusFailed     = "failed"            // Indicates a file delivery has failed
+	MaxRetryAttempts = 5                   // Maximum number of retry attempts for delivery
+	RetryInterval    = 1 * time.Minute     // Time interval between retry attempts
 )
 
 // authRequired checks for either session cookie or Basic Auth

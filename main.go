@@ -20,8 +20,8 @@ import (
 
 // Config struct to hold configuration values
 type Config struct {
-	ServerInterface string   `json:"server_interface"`
-	GossipNodes     []string `json:"gossip_nodes"`
+	ServerInterface string   `json:"server_interface"` // Server listening interface and port
+	GossipNodes     []string `json:"gossip_nodes"`     // List of other nodes for gossip protocol
 }
 
 var (
@@ -31,7 +31,7 @@ var (
 
 func main() {
 	var err error
-	// Load configuration file
+	// Load configuration from config.json file
 	configFile, err := os.Open("config.json")
 	if err != nil {
 		log.Fatalf("Failed to open config file: %v", err)
@@ -43,19 +43,19 @@ func main() {
 		log.Fatalf("Failed to parse config file: %v", err)
 	}
 
-	// Open a connection to the SQLite database
+	// Initialize the SQLite database connection
 	db, err = gorm.Open(sqlite.Open("data.db"), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// Auto-migrate the database schema
+	// Perform automatic schema migration
 	db.AutoMigrate(&User{}, &ESPDevice{}, &Command{}, &FileMetadata{}, &Counter{})
 
-	// Create a new Gin router
+	// Create a new Gin router for handling HTTP requests
 	r := gin.Default()
 
-	// Get the secret key from the environment variables
+	// Retrieve secret key from environment variables for session store
 	secretKey := os.Getenv("SECRET_KEY")
 	if secretKey == "" {
 		log.Fatalf("SECRET_KEY environment variable is required")
@@ -63,17 +63,17 @@ func main() {
 
 	log.Printf("Using secret key: %s", secretKey)
 
-	// Set up session store with the secret key
+	// Set up session middleware using the secret key
 	store := cookie.NewStore([]byte(secretKey))
 	r.Use(sessions.Sessions("mysession", store))
 
-	// Register routes
+	// Register all the API routes
 	registerRoutes(r)
 
-	// Start gossip protocol in a separate goroutine
+	// Start the gossip protocol in a separate goroutine
 	go startGossip()
 
-	// Start the file delivery service
+	// Start the file delivery background service
 	startFileDeliveryService()
 
 	// Run the Gin server on the configured interface
@@ -84,20 +84,23 @@ func main() {
 
 // startGossip starts the gossip protocol at regular intervals
 func startGossip() {
+	// Create a ticker to trigger gossip at specified intervals
 	ticker := time.NewTicker(1 * time.Minute) // Adjust the interval as needed
 	for range ticker.C {
+		// Call the gossip function when the ticker ticks
 		gossip()
 	}
 }
 
 // gossip performs the gossip protocol
 func gossip() {
+	// Check if gossip nodes are configured
 	if len(config.GossipNodes) == 0 {
 		log.Println("No gossip nodes configured, skipping gossip process")
 		return
 	}
 
-	// Select a random node from the configured gossip nodes
+	// Select a random gossip node to communicate with
 	targetNode := config.GossipNodes[rand.Intn(len(config.GossipNodes))]
 	var localVersionVector VersionVector
 	
@@ -124,7 +127,7 @@ func gossip() {
 		Users:         localUsers,
 	}
 
-	// Marshal the payload to JSON
+	// Marshal the payload to JSON and send it to the target node
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Failed to marshal gossip payload: %v", err)
