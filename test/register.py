@@ -1,62 +1,90 @@
 import requests
 import json
+import urllib.parse
 
-def register_board(server_url, cookies_file, start_id, end_id, output_file):
+def login_and_get_session(server_url, username, password):
+    login_endpoint = f"{server_url}/login"
+    
+    # Create a new session
+    session = requests.Session()
+    
+    # Login data
+    payload = {
+        'username': username,
+        'password': password
+    }
+    
+    # Make the login request
+    response = session.post(
+        login_endpoint,
+        data=payload,
+        headers={'Content-Type': 'application/x-www-form-urlencoded'}
+    )
+    
+    if response.status_code != 200:
+        print(f"Login failed. Status code: {response.status_code}")
+        print(f"Response content: {response.text}")
+        raise Exception("Login failed")
+    
+    print("Login successful!")
+    print(f"Session cookies: {session.cookies.get_dict()}")
+    
+    # Try an authenticated request to verify session
+    test_response = session.get(f"{server_url}/active_boards")
+    print(f"Session test response: {test_response.text}")
+    print(f"Session test status: {test_response.status_code}")
+    
+    return session
+
+def register_board(server_url, username, password, start_id, end_id, output_file):
     try:
-        # Load cookies from cookies.txt file
-        with open(cookies_file, 'r') as f:
-            cookies = {}
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) >= 2:
-                    cookies[parts[0]] = parts[1].strip()
-
-        # Endpoint for registration
+        session = login_and_get_session(server_url, username, password)
+        
         endpoint = f"{server_url}/register_device"
-
         registered_boards = []
 
         for esp_id in range(start_id, end_id + 1):
-            esp_secret_key = f'esp_secret_key_{esp_id}'  # Generate secret key based on esp_id
+            esp_secret_key = f'esp_secret_key_{esp_id}'
 
             payload = {
                 'esp_id': f'esp32_{esp_id}',
                 'esp_secret_key': esp_secret_key
             }
 
-            # Send POST request
-            response = requests.post(endpoint, cookies=cookies, data=payload)
+            print(f"Making request with cookies: {session.cookies.get_dict()}")
+            response = session.post(
+                endpoint,
+                data=payload,
+                headers={'Content-Type': 'application/x-www-form-urlencoded'}
+            )
 
-            # Check response
+            print(f"Response status: {response.status_code}")
+            print(f"Response content: {response.text}")
+
             if response.status_code == 200:
-                response_data = response.json()
-                if response_data.get('message') == 'ESP32 registered successfully':
-                    print(f"ESP32 with ID 'esp32_{esp_id}' registered successfully with secret key: {esp_secret_key}.")
-                    registered_boards.append({
-                        'esp_id': f'esp32_{esp_id}',
-                        'esp_secret_key': esp_secret_key
-                    })
-                else:
-                    print(f"Registration failed for esp32_{esp_id}. Server response: {response_data}")
+                print(f"ESP32 with ID 'esp32_{esp_id}' registered successfully!")
+                registered_boards.append({
+                    'esp_id': f'esp32_{esp_id}',
+                    'esp_secret_key': esp_secret_key
+                })
             else:
-                print(f"Failed to register esp32_{esp_id}. Status code: {response.status_code}")
+                print(f"Failed to register esp32_{esp_id}")
+                break
 
-        # Write registered boards to output file
-        with open(output_file, 'w') as outfile:
-            json.dump(registered_boards, outfile, indent=4)
-
-    except FileNotFoundError:
-        print(f"Error: {cookies_file} not found.")
+        if registered_boards:
+            with open(output_file, 'w') as outfile:
+                json.dump(registered_boards, outfile, indent=4)
+                print(f"Successfully registered {len(registered_boards)} boards!")
 
     except Exception as e:
         print(f"Error occurred: {e}")
 
-# Example usage:
 if __name__ == "__main__":
-    server_url = 'http://127.0.0.1:5002'
-    cookies_file = 'cookies.txt'  # Adjust path if necessary
-    start_id = 100001
-    end_id = 200000
-    output_file = 'registered_boards.json'  # Output file to store registered boards
+    server_url = 'http://localhost:5000'
+    username = 'new_user'     # Replace with your actual username
+    password = 'password123'  # Replace with your actual password
+    start_id = 1
+    end_id = 5
+    output_file = 'registered_boards.json'
 
-    register_board(server_url, cookies_file, start_id, end_id, output_file)
+    register_board(server_url, username, password, start_id, end_id, output_file)

@@ -23,31 +23,32 @@ import (
 
 // Constants for file delivery status and retry settings
 const (
-	StatusPending    = "pending"           // Indicates a file is pending delivery
-	StatusCompleted  = "completed"         // Indicates a file was delivered successfully
-	StatusFailed     = "failed"            // Indicates a file delivery has failed
-	MaxRetryAttempts = 5                   // Maximum number of retry attempts for delivery
-	RetryInterval    = 1 * time.Minute     // Time interval between retry attempts
+	StatusPending    = "pending"       // Indicates a file is pending delivery
+	StatusCompleted  = "completed"     // Indicates a file was delivered successfully
+	StatusFailed     = "failed"        // Indicates a file delivery has failed
+	MaxRetryAttempts = 5               // Maximum number of retry attempts for delivery
+	RetryInterval    = 1 * time.Minute // Time interval between retry attempts
 )
 
 // authRequired checks for either session cookie or Basic Auth
 func authRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// First check for session authentication
 		session := sessions.Default(c)
 		userID := session.Get("user_id")
-		if userID != nil {
+		authenticated := session.Get("authenticated")
+
+		if userID != nil && authenticated != nil {
 			c.Set("user_id", userID)
 			c.Next()
 			return
 		}
 
-		// If no session, check for Basic Auth
+		// If no valid session, check for Basic Auth
 		username, password, hasAuth := c.Request.BasicAuth()
 		if hasAuth {
 			// Sanitize input
 			username = sanitizeInput(username)
-			
+
 			// Verify credentials
 			var user User
 			if err := db.Where("username = ?", username).First(&user).Error; err != nil {
@@ -89,7 +90,7 @@ func registerRoutes(r *gin.Engine) {
 		authenticated.POST("/logout", logout)
 
 		// Device routes
-		authenticated.POST("/register_device", registerDevice)
+		authenticated.POST("/register_device", registerDevice) // Moved back to authenticated group
 		authenticated.DELETE("/remove_device", removeDevice)
 
 		// Command routes
@@ -259,10 +260,19 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Create session
+	// Create session with maximum age and path settings
 	session := sessions.Default(c)
+	session.Options(sessions.Options{
+		MaxAge:   3600 * 24, // 24 hours
+		Path:     "/",
+		HttpOnly: true,
+	})
 	session.Set("user_id", user.ID)
-	session.Save()
+	session.Set("authenticated", true) // Add explicit authentication flag
+	if err := session.Save(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to create session"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Logged in successfully"})
 }
@@ -577,8 +587,8 @@ func cargoDelivery(c *gin.Context) {
 		EspID:              espID,
 		DeliveryKey:        deliveryKey,
 		EncryptionPassword: encryptionPassword,
-		Status:            StatusPending,
-		RetryCount:        0,
+		Status:             StatusPending,
+		RetryCount:         0,
 	}
 	if err := db.Create(&fileMetadata).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
@@ -600,7 +610,7 @@ func cargoDelivery(c *gin.Context) {
 	// Success! Update status and delete local file
 	fileMetadata.Status = StatusCompleted
 	db.Save(&fileMetadata)
-	
+
 	err = os.Remove(outputPath)
 	if err != nil {
 		log.Printf("Warning: Failed to delete local file %s: %v", outputPath, err)
@@ -934,7 +944,7 @@ func retryPendingFiles() {
 	}
 
 	var pendingFiles []FileMetadata
-	
+
 	// Find all pending files
 	if err := db.Where("status = ?", StatusPending).Find(&pendingFiles).Error; err != nil {
 		log.Printf("Error fetching pending files: %v", err)
