@@ -8,3 +8,4 @@ database.db-journal
 /.vscode
 /test
 data.db-journal
+GhostkeyClient/__pycache__/
