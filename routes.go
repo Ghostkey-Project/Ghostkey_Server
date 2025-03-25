@@ -77,36 +77,40 @@ func authRequired() gin.HandlerFunc {
 	}
 }
 
+// healthCheck responds with server status
+func healthCheck(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "healthy",
+		"time":    time.Now().UTC().Format(time.RFC3339),
+		"service": "Ghostkey_Server",
+	})
+}
+
 // registerRoutes sets up all the API endpoints for the server
 func registerRoutes(r *gin.Engine) {
+	// Health check endpoint (no authentication required)
+	r.GET("/", healthCheck) // Root path for basic connectivity check
+	r.GET("/health", healthCheck)
+
 	// Public routes (no authentication required)
 	r.POST("/register_user", registerUser)
 	r.POST("/login", login)
 	r.GET("/get_command", getCommand)
 	r.POST("/cargo_delivery", cargoDelivery)
 
-	// Protected routes (authentication required)
+	// Authenticated routes (require valid session)
 	authenticated := r.Group("/")
 	authenticated.Use(authRequired())
 	{
 		authenticated.POST("/logout", logout)
-
-		// Device routes
 		authenticated.POST("/register_device", registerDevice)
-		authenticated.DELETE("/remove_device", removeDevice)
-
-		// Command routes
-		authenticated.POST("/loaded_command", loadedCommand)
-		authenticated.GET("/get_loaded_command", getLoadedCommand)
-		authenticated.POST("/command", command)
+		authenticated.POST("/command", addCommand)
 		authenticated.POST("/remove_command", removeCommand)
 		authenticated.GET("/get_all_commands", getAllCommands)
-
-		// Active boards route
 		authenticated.GET("/active_boards", getActiveBoards)
-
-		// CARGO routes
 		authenticated.POST("/register_mailer", registerMail)
+		authenticated.POST("/loaded_command", updateLoadedCommands)
+		authenticated.DELETE("/remove_device", removeDevice)
 	}
 }
 
@@ -520,10 +524,7 @@ func getActiveBoards(c *gin.Context) {
 
 // CARGO
 // cargoDelivery handles file delivery to the server
-var (
-	idCounter = 1        // Counter for unique IDs
-	idMutex   sync.Mutex // Mutex to protect the counter
-)
+var idMutex sync.Mutex // Mutex to protect the counter
 
 func cargoDelivery(c *gin.Context) {
 	espID := c.PostForm("esp_id")
@@ -602,11 +603,52 @@ func cargoDelivery(c *gin.Context) {
 	if err != nil {
 		// Log the error but don't delete the file - the background service will retry
 		log.Printf("Warning: Failed to deliver file to Storage server: %v. Will retry later.", err)
+		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusPending)
 		c.JSON(http.StatusOK, gin.H{
-			"message": "File received successfully, will attempt delivery to storage server",
+			"message": "received successfully",
 			"status":  StatusPending,
 		})
 		return
+	}
+
+	// Create a client to get the file ID from storage
+	client := &http.Client{}
+	resp, err := client.Get("http://localhost:6000/list_files")
+	if err != nil {
+		log.Printf("DEBUG: Failed to get file list: %v", err)
+		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusCompleted)
+		c.JSON(http.StatusOK, gin.H{
+			"message": "received successfully",
+			"status":  StatusCompleted,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	var filesResp struct {
+		Files []struct {
+			ID       uint   `json:"id"`
+			FileName string `json:"file_name"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&filesResp); err != nil {
+		log.Printf("DEBUG: Failed to decode file list: %v", err)
+		log.Printf("DEBUG: Response body: %s", resp.Body)
+		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusCompleted)
+		c.JSON(http.StatusOK, gin.H{
+			"message": "received successfully",
+			"status":  StatusCompleted,
+		})
+		return
+	}
+
+	// Find our file in the list - it should be the most recent one
+	var fileID uint
+	if len(filesResp.Files) > 0 {
+		fileID = filesResp.Files[len(filesResp.Files)-1].ID
+		log.Printf("DEBUG: Found file ID: %d", fileID)
+	} else {
+		log.Printf("DEBUG: No files found in response")
 	}
 
 	// Success! Update status and delete local file
@@ -618,9 +660,11 @@ func cargoDelivery(c *gin.Context) {
 		log.Printf("Warning: Failed to delete local file %s: %v", outputPath, err)
 	}
 
+	log.Printf("DEBUG: Sending final response with message='delivered successfully', status=%s, file_id=%d", StatusCompleted, fileID)
 	c.JSON(http.StatusOK, gin.H{
-		"message": "File delivered successfully",
+		"message": "delivered successfully",
 		"status":  StatusCompleted,
+		"file_id": fileID,
 	})
 }
 
@@ -727,9 +771,15 @@ func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPasswor
 	}
 
 	// Add other form fields
-	_ = writer.WriteField("esp_id", espID)
-	_ = writer.WriteField("delivery_key", deliveryKey)
-	_ = writer.WriteField("encryption_password", encryptionPassword)
+	if err := writer.WriteField("esp_id", espID); err != nil {
+		return fmt.Errorf("failed to add esp_id field: %v", err)
+	}
+	if err := writer.WriteField("delivery_key", deliveryKey); err != nil {
+		return fmt.Errorf("failed to add delivery_key field: %v", err)
+	}
+	if err := writer.WriteField("encryption_password", encryptionPassword); err != nil {
+		return fmt.Errorf("failed to add encryption_password field: %v", err)
+	}
 
 	err = writer.Close()
 	if err != nil {
@@ -918,7 +968,33 @@ func receiveGossip(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success"})
+	c.JSON(http.StatusOK, gin.H{"status": "gossip received"})
+}
+
+// updateLoadedCommands updates the commands loaded on an ESP device
+func updateLoadedCommands(c *gin.Context) {
+	espID := c.PostForm("esp_id")
+	commandText := c.PostForm("command")
+	if espID == "" || commandText == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and command are required"})
+		return
+	}
+	command(c) // Reuse the command function
+}
+
+// addCommand is an alias for the command function to maintain API compatibility
+func addCommand(c *gin.Context) {
+	command(c)
+}
+
+// isStorageServerOnline checks if the storage server is responding
+func isStorageServerOnline() bool {
+	resp, err := http.Get("http://localhost:6000/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // startFileDeliveryService starts the background service that retries pending file deliveries
@@ -931,99 +1007,38 @@ func startFileDeliveryService() {
 	}()
 }
 
-// isStorageServerOnline checks if the storage server is responding
-func isStorageServerOnline() bool {
-	// Try a GET request to check if server is up instead of HEAD
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:6000/health", nil)
-	if err != nil {
-		log.Printf("Failed to create request for storage server check: %v", err)
-		return false
-	}
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Storage server appears to be offline: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Check for successful response
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Storage server returned non-OK status: %d", resp.StatusCode)
-		return false
-	}
-
-	// Read and parse the response to ensure it's the right service
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Failed to read storage server response: %v", err)
-		return false
-	}
-
-	var respData map[string]interface{}
-	if err := json.Unmarshal(body, &respData); err != nil {
-		log.Printf("Failed to parse storage server response: %v", err)
-		return false
-	}
-
-	// Verify it's our storage server by checking for expected response structure
-	if _, ok := respData["status"]; !ok {
-		log.Printf("Storage server response missing expected 'status' field")
-		return false
-	}
-
-	return true
-}
-
-// retryPendingFiles attempts to deliver any pending files to the storage server
+// retryPendingFiles attempts to deliver any pending files to storage
 func retryPendingFiles() {
-	// First check if storage server is online
-	if !isStorageServerOnline() {
-		log.Printf("Storage server is offline, skipping file delivery attempts")
-		return
-	}
-
+	// Find all pending files that haven't exceeded max retries
 	var pendingFiles []FileMetadata
-
-	// Find all pending files
-	if err := db.Where("status = ?", StatusPending).Find(&pendingFiles).Error; err != nil {
-		log.Printf("Error fetching pending files: %v", err)
+	if err := db.Where("status = ? AND retry_count < ?", StatusPending, MaxRetryAttempts).Find(&pendingFiles).Error; err != nil {
+		log.Printf("Failed to fetch pending files: %v", err)
 		return
 	}
 
 	for _, file := range pendingFiles {
-		// Check if file still exists
-		if _, err := os.Stat(file.FilePath); os.IsNotExist(err) {
-			log.Printf("File %s no longer exists, marking as failed", file.FilePath)
-			file.Status = StatusFailed
-			db.Save(&file)
-			continue
-		}
-
-		// Attempt to send file
+		// Try to deliver the file
 		err := sendFileToStorage(file.FilePath, file.OriginalFileName, file.EspID, file.DeliveryKey, file.EncryptionPassword)
+
 		if err != nil {
-			log.Printf("Failed to deliver file %s: %v", file.FilePath, err)
-			// Don't increment retry count if server becomes unreachable
-			if isStorageServerOnline() {
-				file.RetryCount++
-				if file.RetryCount >= MaxRetryAttempts {
-					file.Status = StatusFailed
-					log.Printf("File %s failed to deliver after %d attempts", file.FilePath, MaxRetryAttempts)
-				}
-				db.Save(&file)
+			// Update retry count
+			file.RetryCount++
+			if file.RetryCount >= MaxRetryAttempts {
+				file.Status = StatusFailed
+				log.Printf("File delivery failed after %d attempts: %s", MaxRetryAttempts, file.FileName)
 			}
-			continue
+		} else {
+			// Delivery successful
+			file.Status = StatusCompleted
+			// Try to delete the local file
+			if err := os.Remove(file.FilePath); err != nil {
+				log.Printf("Warning: Failed to delete local file %s: %v", file.FilePath, err)
+			}
 		}
 
-		// Success! Delete the file and update the database
-		os.Remove(file.FilePath)
-		file.Status = StatusCompleted
-		db.Save(&file)
-		log.Printf("Successfully delivered pending file: %s", file.FilePath)
+		// Save the updated file status
+		if err := db.Save(&file).Error; err != nil {
+			log.Printf("Failed to update file status: %v", err)
+		}
 	}
 }
