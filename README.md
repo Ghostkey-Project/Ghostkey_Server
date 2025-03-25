@@ -14,6 +14,10 @@ C2 server for the Ghostkey project.
 1. Set the environment variable:
     - `SECRET_KEY` as an environment variable or in your deployment environment.
 
+```ps1
+$env:SECRET_KEY='test_secret_key'; go run .
+```
+
 ```sh
 export SECRET_KEY=your_secret_key
 go run main.go models.go routes.go
