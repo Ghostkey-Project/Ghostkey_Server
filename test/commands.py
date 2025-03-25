@@ -67,15 +67,59 @@ def main():
     requests_per_minute = 60  # Adjust as per your requirement
     seconds_per_request = 60 / requests_per_minute
     
+    print(f"{colors.GREEN}=== Ghostkey Command Tester ==={colors.END}")
+    print(f"Found {len(boards)} boards in the configuration.")
+    
     while True:
-        # Select a random board
-        board = random.choice(boards)
-        esp_id = board['esp_id']
+        # Menu options
+        print("\n" + "="*50)
+        print("1. Select a random board and send command")
+        print("2. Select a specific board and send command")
+        print("3. Exit")
+        choice = input("Enter your choice (1-3): ")
+        
+        if choice == '3':
+            print("Exiting program...")
+            break
+            
+        # Get command from user
+        command = input("Enter the command to send: ")
+        if not command:
+            print(f"{colors.YELLOW}Command cannot be empty. Using default 'ping' command.{colors.END}")
+            command = "ping"
+            
+        if choice == '1':
+            # Select a random board
+            board = random.choice(boards)
+            esp_id = board['esp_id']
+        elif choice == '2':
+            # List all available boards
+            print("\nAvailable boards:")
+            for i, board in enumerate(boards):
+                print(f"{i+1}. {board['esp_id']}")
+                
+            try:
+                board_index = int(input("Select board number: ")) - 1
+                if board_index < 0 or board_index >= len(boards):
+                    print(f"{colors.YELLOW}Invalid selection. Using a random board.{colors.END}")
+                    board = random.choice(boards)
+                else:
+                    board = boards[board_index]
+            except ValueError:
+                print(f"{colors.YELLOW}Invalid input. Using a random board.{colors.END}")
+                board = random.choice(boards)
+                
+            esp_id = board['esp_id']
+        else:
+            print(f"{colors.YELLOW}Invalid choice. Please try again.{colors.END}")
+            continue
+            
+        print(f"\nSending command '{command}' to board '{esp_id}'...")
         
         # Send command to the selected board
-        command = "your_command_here"
         esp_id_sent, send_response = send_command_to_board_with_cookies(esp_id, command, cookies_file)
         if send_response.status_code == 200:
+            print(f"Waiting {seconds_per_request:.2f} seconds before retrieving command...")
             time.sleep(seconds_per_request)
             
             # Retrieve command for the same board
@@ -90,8 +134,6 @@ def main():
         else:
             print(f"{colors.RED}Error: Failed to send command to ESP board '{esp_id}'.{colors.END}")
             input(f"{colors.YELLOW}Press Enter to continue...{colors.END}")
-        
-        time.sleep(seconds_per_request)
 
 if __name__ == "__main__":
     main()

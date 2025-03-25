@@ -74,7 +74,29 @@ func main() {
 	go startGossip()
 
 	// Start the file delivery background service
+	log.Println("Starting file delivery service...")
 	startFileDeliveryService()
+
+	// Run a check for storage server availability
+	go func() {
+		// Initial check
+		if isStorageServerOnline() {
+			log.Println("Storage server is online and responding to health checks")
+		} else {
+			log.Println("WARNING: Storage server (Ghostkey_Depo) is offline! File delivery will be queued until it's available.")
+			log.Println("Make sure Ghostkey_Depo is running on port 6000 or adjust the configuration.")
+		}
+
+		// Periodically check status
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			if isStorageServerOnline() {
+				log.Println("Storage server connection status: Online")
+			} else {
+				log.Println("Storage server connection status: Offline")
+			}
+		}
+	}()
 
 	// Run the Gin server on the configured interface
 	if err := r.Run(config.ServerInterface); err != nil {
@@ -103,7 +125,7 @@ func gossip() {
 	// Select a random gossip node to communicate with
 	targetNode := config.GossipNodes[rand.Intn(len(config.GossipNodes))]
 	var localVersionVector VersionVector
-	
+
 	// Fetch the local version vector
 	db.Model(&Command{}).Pluck("updated_at", &localVersionVector)
 

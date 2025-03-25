@@ -13,10 +13,15 @@ class GhostkeyClient(QMainWindow):
         super().__init__()
         
         # Default server URL (configurable)
-        self.base_url = "http://localhost:8080"
+        self.base_url = "http://localhost:5000"
         
         # Authentication handler
         self.auth = Authentication(self.base_url)
+        
+        # Create instance variables first to prevent reference errors
+        self.boards_widget = None
+        self.commands_widget = None
+        self.stacked_widget = None
         
         # Initialize UI
         self.setup_ui()
@@ -47,6 +52,9 @@ class GhostkeyClient(QMainWindow):
         """Check if user is authenticated, show login if not"""
         if not self.auth.is_authenticated():
             self.show_login()
+        else:
+            # If already authenticated, trigger initial board refresh
+            self.show_boards()
             
     def show_login(self):
         """Show login dialog"""

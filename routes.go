@@ -4,6 +4,8 @@ package main
 // Import necessary packages
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -90,7 +92,7 @@ func registerRoutes(r *gin.Engine) {
 		authenticated.POST("/logout", logout)
 
 		// Device routes
-		authenticated.POST("/register_device", registerDevice) // Moved back to authenticated group
+		authenticated.POST("/register_device", registerDevice)
 		authenticated.DELETE("/remove_device", removeDevice)
 
 		// Command routes
@@ -321,7 +323,7 @@ func registerDevice(c *gin.Context) {
 // removeDevice handles removal of an ESP device
 func removeDevice(c *gin.Context) {
 	espID := c.Query("esp_id")
-	espSecretKey := c.Query("secret_key")
+	espSecretKey := c.Query("secret_key") // Changed from esp_secret_key to match test expectations
 
 	// Validate parameters
 	if espID == "" || espSecretKey == "" {
@@ -700,10 +702,14 @@ func registerMail(c *gin.Context) {
 
 // sendFileToStorage sends the file to the Storage server
 func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPassword string) error {
+	// Setup context with timeout for the request
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// Open the file to send
 	file, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open file: %v", err)
 	}
 	defer file.Close()
 
@@ -713,11 +719,11 @@ func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPasswor
 	// Add file to the form
 	part, err := writer.CreateFormFile("file", fileName)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create form file: %v", err)
 	}
 	_, err = io.Copy(part, file)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to copy file content: %v", err)
 	}
 
 	// Add other form fields
@@ -727,13 +733,13 @@ func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPasswor
 
 	err = writer.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to close multipart writer: %v", err)
 	}
 
 	// Create POST request to Storage server
-	req, err := http.NewRequest("POST", "http://localhost:6000/upload_file", body)
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://localhost:6000/upload_file", body)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
@@ -741,21 +747,23 @@ func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPasswor
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("request to storage server failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// Read the response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read response body: %v", err)
 	}
 
 	// Check for successful response
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to upload file to Storage server: %s", string(respBody))
+		return fmt.Errorf("failed to upload file to Storage server (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
+	// Log successful file transfer
+	log.Printf("File successfully sent to Storage server: %s", fileName)
 	return nil
 }
 
@@ -925,14 +933,50 @@ func startFileDeliveryService() {
 
 // isStorageServerOnline checks if the storage server is responding
 func isStorageServerOnline() bool {
-	// Try a simple HEAD request to check if server is up
-	resp, err := http.Head("http://localhost:6000/health")
+	// Try a GET request to check if server is up instead of HEAD
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:6000/health", nil)
+	if err != nil {
+		log.Printf("Failed to create request for storage server check: %v", err)
+		return false
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Storage server appears to be offline: %v", err)
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+
+	// Check for successful response
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Storage server returned non-OK status: %d", resp.StatusCode)
+		return false
+	}
+
+	// Read and parse the response to ensure it's the right service
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read storage server response: %v", err)
+		return false
+	}
+
+	var respData map[string]interface{}
+	if err := json.Unmarshal(body, &respData); err != nil {
+		log.Printf("Failed to parse storage server response: %v", err)
+		return false
+	}
+
+	// Verify it's our storage server by checking for expected response structure
+	if _, ok := respData["status"]; !ok {
+		log.Printf("Storage server response missing expected 'status' field")
+		return false
+	}
+
+	return true
 }
 
 // retryPendingFiles attempts to deliver any pending files to the storage server

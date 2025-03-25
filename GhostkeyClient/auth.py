@@ -39,6 +39,28 @@ class Authentication:
                 return False, f"Login failed: {response.json().get('message', 'Unknown error')}"
         except requests.RequestException as e:
             return False, f"Connection error: {str(e)}"
+    
+    def refresh_session(self):
+        """Attempt to refresh an expired session"""
+        if not self.username or not self.password:
+            return False
+            
+        try:
+            # Re-authenticate with stored credentials
+            if self.auth_method == "session":
+                # For session auth, we need to login again
+                response = self.session.post(
+                    f"{self.base_url}/login",
+                    data={"username": self.username, "password": self.password}
+                )
+            else:
+                # For basic auth, just update the auth header
+                self.session.auth = HTTPBasicAuth(self.username, self.password)
+                response = self.session.get(f"{self.base_url}/active_boards")
+                
+            return response.status_code == 200
+        except:
+            return False
             
     def logout(self):
         """Logout from the server"""

@@ -45,8 +45,8 @@ class BoardsWidget(QWidget):
         
         self.setLayout(self.layout)
         
-        # Initial load of boards
-        self.refresh_boards()
+        # Don't load boards immediately during initialization
+        # Will be loaded by parent after setup is complete
         
     def refresh_boards(self):
         """Fetch and display active boards"""
@@ -58,12 +58,20 @@ class BoardsWidget(QWidget):
                 active_boards = response.json().get("active_boards", [])
                 self.display_boards(active_boards)
                 self.status_label.setText(f"Active Boards ({len(active_boards)})")
-            else:
-                self.status_label.setText("Failed to fetch boards")
-                if response.status_code == 401:
-                    QMessageBox.warning(self, "Authentication Error", 
+            elif response.status_code == 401:
+                # Session expired - try to refresh automatically
+                self.status_label.setText("Refreshing session...")
+                if self.auth.refresh_session():
+                    # Successfully refreshed, try the request again
+                    self.refresh_boards()
+                else:
+                    # Unable to refresh automatically, show login dialog immediately
+                    self.status_label.setText("Session expired")
+                    QMessageBox.information(self, "Session Expired", 
                                      "Your session has expired. Please log in again.")
                     self.parent().show_login()
+            else:
+                self.status_label.setText("Failed to fetch boards")
         except requests.RequestException as e:
             self.status_label.setText(f"Connection error: {str(e)[:30]}...")
     

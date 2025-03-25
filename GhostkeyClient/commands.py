@@ -87,12 +87,20 @@ class CommandsWidget(QWidget):
                 commands = response.json().get("commands", [])
                 self.display_commands(commands)
                 self.status_label.setText(f"Commands ({len(commands)})")
-            else:
-                self.status_label.setText("Failed to fetch commands")
-                if response.status_code == 401:
-                    QMessageBox.warning(self, "Authentication Error", 
+            elif response.status_code == 401:
+                # Session expired - try to refresh automatically
+                self.status_label.setText("Refreshing session...")
+                if self.auth.refresh_session():
+                    # Successfully refreshed, try the request again
+                    self.refresh_commands()
+                else:
+                    # Unable to refresh automatically, show login dialog immediately
+                    self.status_label.setText("Session expired")
+                    QMessageBox.information(self, "Session Expired", 
                                      "Your session has expired. Please log in again.")
                     self.parent().show_login()
+            else:
+                self.status_label.setText("Failed to fetch commands")
         except requests.RequestException as e:
             self.status_label.setText(f"Connection error: {str(e)[:30]}...")
     
@@ -146,6 +154,16 @@ class CommandsWidget(QWidget):
                 if response.status_code == 200:
                     QMessageBox.information(self, "Success", "Command removed successfully")
                     self.refresh_commands()
+                elif response.status_code == 401:
+                    # Session expired - try to refresh automatically
+                    if self.auth.refresh_session():
+                        # Try the operation again
+                        self.on_remove_command()
+                    else:
+                        # Show login dialog
+                        QMessageBox.information(self, "Session Expired", 
+                                         "Your session has expired. Please log in again.")
+                        self.parent().show_login()
                 else:
                     QMessageBox.warning(self, "Error", 
                                     f"Failed to remove command: {response.json().get('message', 'Unknown error')}")
@@ -222,6 +240,17 @@ class AddCommandDialog(QDialog):
             if response.status_code == 200:
                 QMessageBox.information(self, "Success", "Command added successfully")
                 self.accept()
+            elif response.status_code == 401:
+                # Session expired - try to refresh automatically
+                if self.parent.auth.refresh_session():
+                    # Try the operation again
+                    self.on_add()
+                else:
+                    # Show login dialog
+                    QMessageBox.information(self, "Session Expired", 
+                                     "Your session has expired. Please log in again.")
+                    self.parent().parent().show_login()
+                    self.reject()
             else:
                 QMessageBox.warning(self, "Error", 
                                  f"Failed to add command: {response.json().get('message', 'Unknown error')}")
