@@ -43,11 +43,7 @@ to fix it run these `sudo apt install build-essential`
 To register a new user, ensure you provide the `SECRET_KEY` along with the username and password.
 
 ```sh
-curl --location 'http://localhost:5000/register_user' \
---header 'Content-Type: application/x-www-form-urlencoded' \
---data-urlencode 'username=new_user' \
---data-urlencode 'password=password123' \
---data-urlencode 'secret_key=your_secret_key'
+curl --location 'http://localhost:5000/register_user' --header 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'username=new_user' --data-urlencode 'password=password123' --data-urlencode 'secret_key=your_secret_key'
 ```
 
 ### 2. Login
