@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -409,29 +410,62 @@ func getCommand(c *gin.Context) {
 		return
 	}
 
-	// Update last request time
+	// Update last request time - store current time
 	now := time.Now().UTC()
 	device.LastRequestTime = &now
 
-	// Retrieve the next command
+	// Update the database with a separate goroutine to avoid blocking the response
+	// This ensures the ESP gets a command quickly even if the database is locked
+	go func(deviceID uint, timestamp time.Time) {
+		// Retry logic for database updates with exponential backoff
+		maxRetries := 5
+		baseDelay := 10 * time.Millisecond
+
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			// Create a new DB session for each attempt to avoid transaction conflicts
+			updateErr := db.Exec("UPDATE esp_devices SET last_request_time = ? WHERE id = ?", timestamp, deviceID).Error
+
+			if updateErr == nil {
+				// Success - log and exit retry loop
+				log.Printf("Successfully updated LastRequestTime for device %s (ID: %d) after %d attempt(s)", espID, deviceID, attempt+1)
+				break
+			}
+
+			// If it's the last attempt, just log the failure
+			if attempt == maxRetries-1 {
+				log.Printf("Failed to update LastRequestTime for device %s after %d attempts: %v", espID, maxRetries, updateErr)
+				break
+			}
+
+			// Calculate backoff with jitter for next attempt
+			delay := baseDelay * time.Duration(1<<uint(attempt)) // Exponential backoff
+			jitter := time.Duration(rand.Int63n(int64(delay / 2)))
+			delay = delay + jitter
+
+			log.Printf("Database error updating device %s timestamp (attempt %d/%d): %v - retrying in %v",
+				espID, attempt+1, maxRetries, updateErr, delay)
+			time.Sleep(delay)
+		}
+	}(device.ID, now)
+
+	// Retrieve the next command - we do this after updating the last_request_time to ensure
+	// the timestamp is updated even if there's a problem retrieving or deleting the command
+	var commandErr error
 	var command Command
-	err := db.Where("esp_id = ?", espID).Order("id").First(&command).Error
-	if err != nil {
-		// If no command found, return a preset command
+	commandErr = db.Where("esp_id = ?", espID).Order("id").First(&command).Error
+
+	if commandErr != nil {
+		// If no command found, return a default "null" command
 		presetCommand := "null"
 		command = Command{EspID: espID, Command: presetCommand}
 	} else {
-		// Delete the retrieved command from the database
+		// A command was found - attempt to delete it from the database
+		// If deletion fails due to database locking, we'll still return the command
+		// but it might be retrieved again on the next poll
 		if err := db.Delete(&command).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to delete command"})
-			return
+			log.Printf("Warning: Failed to delete command for device %s: %v", espID, err)
+			// Continue processing - don't return an error to the client
 		}
-	}
-
-	// Save the updated LastRequestTime for the device
-	if err := db.Save(&device).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to update device"})
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"command": command.Command})
@@ -493,33 +527,50 @@ func getAllCommands(c *gin.Context) {
 func getActiveBoards(c *gin.Context) {
 	var devices []ESPDevice
 
-	// Get devices with a last request time within the last 2 minutes
-	XMinutesAgo := time.Now().UTC().Add(-2 * time.Minute)
-	if err := db.Where("last_request_time > ?", XMinutesAgo).Find(&devices).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to retrieve active boards"})
+	// Get devices with a last request time within the last 5 minutes (increased window for better visibility)
+	fiveMinutesAgo := time.Now().UTC().Add(-5 * time.Minute)
+
+	// Query to get all devices that have communicated recently
+	if err := db.Where("last_request_time > ?", fiveMinutesAgo).Find(&devices).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve active boards", "details": err.Error()})
 		return
 	}
 
-	// Build a list of active devices
-	activeBoards := make([]map[string]interface{}, len(devices))
-	for i, device := range devices {
-		// Check if LastRequestTime is not nil
+	// Debug information
+	log.Printf("Found %d active devices in the last 5 minutes", len(devices))
+
+	// Build a list of active devices with proper time handling
+	activeBoards := make([]map[string]interface{}, 0, len(devices))
+	for _, device := range devices {
+		// Only include devices with valid LastRequestTime
 		if device.LastRequestTime != nil {
-			durationSinceLastRequest := time.Since(*device.LastRequestTime)
-			activeBoards[i] = map[string]interface{}{
-				"esp_id":                device.EspID,
-				"last_request_duration": durationSinceLastRequest.String(),
+			// Calculate how long ago the device was active
+			now := time.Now().UTC()
+			lastRequestTime := device.LastRequestTime.UTC() // Ensure UTC comparison
+			durationSinceLastRequest := now.Sub(lastRequestTime)
+
+			// Format duration in a human-readable way
+			var durationStr string
+			if durationSinceLastRequest.Minutes() < 1 {
+				durationStr = fmt.Sprintf("%.0f seconds ago", durationSinceLastRequest.Seconds())
+			} else if durationSinceLastRequest.Hours() < 1 {
+				durationStr = fmt.Sprintf("%.1f minutes ago", durationSinceLastRequest.Minutes())
+			} else {
+				durationStr = fmt.Sprintf("%.1f hours ago", durationSinceLastRequest.Hours())
 			}
-		} else {
-			// Handle case where LastRequestTime is nil
-			activeBoards[i] = map[string]interface{}{
+			// Add to the list of active boards
+			boardInfo := map[string]interface{}{
 				"esp_id":                device.EspID,
-				"last_request_duration": "No commands since last request",
+				"last_request_time":     device.LastRequestTime.Format(time.RFC3339),
+				"last_request_duration": durationStr,
 			}
+			activeBoards = append(activeBoards, boardInfo)
+
+			log.Printf("Active device: %s, last active: %s", device.EspID, durationStr)
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards})
+	c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards, "count": len(activeBoards)})
 }
 
 // CARGO
