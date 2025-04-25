@@ -9,3 +9,4 @@ database.db-journal
 /test
 data.db-journal
 GhostkeyClient/__pycache__/
+*.exe
