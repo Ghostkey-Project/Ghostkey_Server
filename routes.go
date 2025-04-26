@@ -98,6 +98,9 @@ func registerRoutes(r *gin.Engine) {
 	r.POST("/login", login)
 	r.GET("/get_command", getCommand)
 	r.POST("/cargo_delivery", cargoDelivery)
+	r.GET("/ws", handleWebSocket)              // WebSocket endpoint for real-time sync
+	r.POST("/gossip", receiveGossip)           // Gossip endpoint for sync between nodes
+	r.GET("/cluster/status", getClusterStatus) // Get cluster status
 
 	// Authenticated routes (require valid session)
 	authenticated := r.Group("/")
@@ -230,12 +233,14 @@ func registerUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to set password"})
 		return
 	}
-
 	// Save user to database
 	if err := db.Create(&newUser).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to register user"})
 		return
 	}
+
+	// Publish the user change to the cluster
+	publishUserChange(newUser, "create")
 
 	c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
 }
@@ -314,13 +319,15 @@ func registerDevice(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID already exists"})
 		return
 	}
-
 	// Create new device
 	newDevice := ESPDevice{EspID: espID, EspSecretKey: espSecretKey}
 	if err := db.Create(&newDevice).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to register ESP32"})
 		return
 	}
+
+	// Publish the device change to the cluster
+	publishDeviceChange(newDevice, "create")
 
 	c.JSON(http.StatusOK, gin.H{"message": "ESP32 registered successfully", "esp_id": espID})
 }
@@ -346,12 +353,14 @@ func removeDevice(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID or secret key"})
 		return
 	}
-
 	// Delete the device
 	if err := db.Delete(&device).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to remove ESP32"})
 		return
 	}
+
+	// Publish the device deletion to the cluster
+	publishDeviceChange(device, "delete")
 
 	c.JSON(http.StatusOK, gin.H{"message": "ESP32 removed successfully"})
 }
@@ -377,13 +386,15 @@ func command(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID"})
 		return
 	}
-
 	// Create new command
 	newCommand := Command{EspID: espID, Command: commandText}
 	if err := db.Create(&newCommand).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to add command"})
 		return
 	}
+
+	// Publish the command change to the cluster
+	publishCommandChange(newCommand, "create")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Command added successfully"})
 }
@@ -487,12 +498,14 @@ func removeCommand(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Command not found"})
 		return
 	}
-
 	// Delete the command
 	if err := db.Delete(&command).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to remove command"})
 		return
 	}
+
+	// Publish the command deletion to the cluster
+	publishCommandChange(command, "delete")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Command removed successfully"})
 }
@@ -635,19 +648,21 @@ func cargoDelivery(c *gin.Context) {
 
 	// Update file metadata and save to database
 	fileMetadata := FileMetadata{
-		FileName:           fileName,
-		OriginalFileName:   header.Filename,
-		FilePath:           outputPath,
-		EspID:              espID,
-		DeliveryKey:        deliveryKey,
-		EncryptionPassword: encryptionPassword,
-		Status:             StatusPending,
-		RetryCount:         0,
+		FileName:         fileName,
+		OriginalFileName: header.Filename,
+		FilePath:         outputPath,
+		EspID:            espID,
+		DeliveryKey:      deliveryKey, EncryptionPassword: encryptionPassword,
+		Status:     StatusPending,
+		RetryCount: 0,
 	}
 	if err := db.Create(&fileMetadata).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
 		return
 	}
+
+	// Publish the file metadata to the cluster
+	publishFileChange(fileMetadata, "create")
 
 	// Try immediate delivery
 	err = sendFileToStorage(outputPath, header.Filename, espID, deliveryKey, encryptionPassword)

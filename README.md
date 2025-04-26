@@ -131,6 +131,16 @@ Run the server using Docker:
 docker-compose up --build
 ```
 
+## Cluster Mode
+
+The server supports real-time synchronization between multiple instances, allowing for horizontal scaling and high availability. For details, see [CLUSTER.md](CLUSTER.md).
+
+To run the server in cluster mode:
+
+```sh
+docker-compose -f docker-compose.cluster.yml up --build
+```
+
 # Collaboration
 If you want to collaborate with the project or make your own version of the Ghostkey, feel free to do so. I only ask that you share with me your version of the project so I can learn from it and find ways to improve the Ghostkey.
 

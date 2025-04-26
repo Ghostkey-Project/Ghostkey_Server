@@ -1,0 +1,87 @@
+# version: '3.8'
+
+services:
+  # First node
+  node1:
+    build: .
+    image: ghostkey-server
+    ports:
+      - "5001:5000"  # Exposing each node on a unique port
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-default_secret_key}
+    volumes:
+      - node1_data:/app/data
+      - node1_cargo:/app/cargo_files
+    configs:
+      - source: node1_config
+        target: /app/config.json
+
+  # Second node  
+  node2:
+    build: .
+    image: ghostkey-server
+    ports:
+      - "5002:5000"
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-default_secret_key}
+    volumes:
+      - node2_data:/app/data
+      - node2_cargo:/app/cargo_files
+    configs:
+      - source: node2_config
+        target: /app/config.json
+    depends_on:
+      - node1
+      
+  # Third node
+  node3:
+    build: .
+    image: ghostkey-server
+    ports:
+      - "5003:5000"
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-default_secret_key}
+    volumes:
+      - node3_data:/app/data
+      - node3_cargo:/app/cargo_files
+    configs:
+      - source: node3_config
+        target: /app/config.json
+    depends_on:
+      - node1
+
+# Defining separate volumes for each node
+volumes:
+  node1_data:
+  node1_cargo:
+  node2_data:
+  node2_cargo:
+  node3_data:
+  node3_cargo:
+
+# Configuration files for each node
+configs:
+  node1_config:
+    content: |
+      {
+        "server_interface": ":5000",
+        "gossip_nodes": ["node2:5000", "node3:5000"],
+        "node_id": "node-1",
+        "cluster_enabled": true
+      }
+  node2_config:
+    content: |
+      {
+        "server_interface": ":5000",
+        "gossip_nodes": ["node1:5000", "node3:5000"],
+        "node_id": "node-2",
+        "cluster_enabled": true
+      }
+  node3_config:
+    content: |
+      {
+        "server_interface": ":5000",
+        "gossip_nodes": ["node1:5000", "node2:5000"],
+        "node_id": "node-3",
+        "cluster_enabled": true
+      }

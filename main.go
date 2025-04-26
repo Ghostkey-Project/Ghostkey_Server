@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -22,6 +23,8 @@ import (
 type Config struct {
 	ServerInterface string   `json:"server_interface"` // Server listening interface and port
 	GossipNodes     []string `json:"gossip_nodes"`     // List of other nodes for gossip protocol
+	NodeID          string   `json:"node_id"`          // Unique identifier for this node
+	ClusterEnabled  bool     `json:"cluster_enabled"`  // Whether to enable cluster mode
 }
 
 var (
@@ -68,10 +71,20 @@ func main() {
 	r.Use(sessions.Sessions("mysession", store))
 
 	// Register all the API routes
-	registerRoutes(r)
+	registerRoutes(r) // Initialize the sync system if cluster mode is enabled
+	if config.ClusterEnabled {
+		if config.NodeID == "" {
+			// Generate a random node ID if not provided
+			config.NodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
+			log.Printf("No node ID provided, generated: %s", config.NodeID)
+		}
 
-	// Start the gossip protocol in a separate goroutine
-	go startGossip()
+		log.Printf("Cluster mode enabled, node ID: %s", config.NodeID)
+		initSync(config.NodeID)
+	} else {
+		// Start the gossip protocol in a separate goroutine (legacy mode)
+		go startGossip()
+	}
 
 	// Start the file delivery background service
 	log.Println("Starting file delivery service...")
