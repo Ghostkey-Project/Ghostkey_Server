@@ -1,0 +1,6 @@
+{
+            "server_interface": ":5001",
+            "gossip_nodes": ["localhost:5002", "localhost:5003"],
+            "node_id": "node-1",
+            "cluster_enabled": true
+        }

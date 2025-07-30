@@ -28,13 +28,21 @@ type Config struct {
 }
 
 var (
-	db     *gorm.DB
-	config Config
+	db           *gorm.DB
+	config       Config
+	serverConfig *ServerConfig
 )
 
 func main() {
 	var err error
-	// Load configuration from config.json file
+
+	// Load server configuration
+	serverConfig, err = LoadConfig("config.json")
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Load legacy configuration for backward compatibility
 	configFile, err := os.Open("config.json")
 	if err != nil {
 		log.Fatalf("Failed to open config file: %v", err)
@@ -47,7 +55,7 @@ func main() {
 	}
 
 	// Initialize the SQLite database connection
-	db, err = gorm.Open(sqlite.Open("data.db"), &gorm.Config{})
+	db, err = gorm.Open(sqlite.Open(serverConfig.Database.Path), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -58,16 +66,28 @@ func main() {
 	// Create a new Gin router for handling HTTP requests
 	r := gin.Default()
 
+	// Add security middleware
+	r.Use(SecurityHeadersMiddleware())
+	r.Use(CORSMiddleware())
+	r.Use(LoggingMiddleware())
+	r.Use(RateLimitMiddleware(serverConfig.Security.RateLimitRequests, time.Duration(serverConfig.Security.RateLimitWindow)*time.Second))
+
 	// Retrieve secret key from environment variables for session store
-	secretKey := os.Getenv("SECRET_KEY")
+	secretKey := serverConfig.Security.SecretKey
 	if secretKey == "" {
 		log.Fatalf("SECRET_KEY environment variable is required")
 	}
 
-	log.Printf("Using secret key: %s", secretKey)
+	log.Printf("Session store initialized successfully")
 
 	// Set up session middleware using the secret key
 	store := cookie.NewStore([]byte(secretKey))
+	store.Options(sessions.Options{
+		MaxAge:   serverConfig.Security.SessionMaxAge,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   serverConfig.Security.EnableHTTPS,
+	})
 	r.Use(sessions.Sessions("mysession", store))
 
 	// Register all the API routes
@@ -112,8 +132,16 @@ func main() {
 	}()
 
 	// Run the Gin server on the configured interface
-	if err := r.Run(config.ServerInterface); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	if serverConfig.Security.EnableHTTPS && serverConfig.Security.CertFile != "" && serverConfig.Security.KeyFile != "" {
+		log.Printf("Starting HTTPS server on %s", serverConfig.Server.Interface)
+		if err := r.RunTLS(serverConfig.Server.Interface, serverConfig.Security.CertFile, serverConfig.Security.KeyFile); err != nil {
+			log.Fatalf("Failed to run HTTPS server: %v", err)
+		}
+	} else {
+		log.Printf("Starting HTTP server on %s", serverConfig.Server.Interface)
+		if err := r.Run(serverConfig.Server.Interface); err != nil {
+			log.Fatalf("Failed to run server: %v", err)
+		}
 	}
 }
 

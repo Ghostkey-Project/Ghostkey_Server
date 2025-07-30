@@ -1,6 +1,40 @@
 {
-    "server_interface": ":5000",
-    "gossip_nodes": [],
+  "storage": {
+    "retry_interval": 60,
+    "timeout": 30,
+    "health_check_url": "http://localhost:6000/health",
+    "retry_attempts": 5,
+    "url": "http://localhost:6000"
+  },
+  "cluster": {
+    "enabled": false,
+    "sync_interval": 60,
     "node_id": "node-1",
-    "cluster_enabled": false
+    "gossip_nodes": []
+  },
+  "server": {
+    "port": 5000,
+    "idle_timeout": 120,
+    "interface": ":5000",
+    "write_timeout": 30,
+    "read_timeout": 30
+  },
+  "security": {
+    "allowed_origins": [
+      "http://localhost:3000",
+      "http://localhost:5000",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:5000"
+    ],
+    "cert_file": "",
+    "rate_limit_window": 60,
+    "key_file": "",
+    "session_max_age": 86400,
+    "enable_https": false,
+    "rate_limit_requests": 100
+  },
+  "database": {
+    "path": "data.db",
+    "type": "sqlite"
+  }
 }

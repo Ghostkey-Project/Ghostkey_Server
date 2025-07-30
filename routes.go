@@ -1,7 +1,6 @@
 // Package main declares the main package of the application
 package main
 
-// Import necessary packages
 import (
 	"bytes"
 	"context"
@@ -22,15 +21,6 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-)
-
-// Constants for file delivery status and retry settings
-const (
-	StatusPending    = "pending"       // Indicates a file is pending delivery
-	StatusCompleted  = "completed"     // Indicates a file was delivered successfully
-	StatusFailed     = "failed"        // Indicates a file delivery has failed
-	MaxRetryAttempts = 5               // Maximum number of retry attempts for delivery
-	RetryInterval    = 1 * time.Minute // Time interval between retry attempts
 )
 
 // authRequired checks for either session cookie or Basic Auth
@@ -55,13 +45,13 @@ func authRequired() gin.HandlerFunc {
 			// Verify credentials
 			var user User
 			if err := db.Where("username = ?", username).First(&user).Error; err != nil {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+				RespondUnauthorized(c, "Invalid credentials")
 				c.Abort()
 				return
 			}
 
 			if !user.CheckPassword(password) {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+				RespondUnauthorized(c, "Invalid credentials")
 				c.Abort()
 				return
 			}
@@ -73,7 +63,7 @@ func authRequired() gin.HandlerFunc {
 		}
 
 		// No valid authentication method found
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		RespondUnauthorized(c, "Authentication required")
 		c.Abort()
 	}
 }
@@ -121,7 +111,8 @@ func registerRoutes(r *gin.Engine) {
 // sanitizeInput cleans the input string to prevent injection attacks
 func sanitizeInput(input string) string {
 	input = strings.TrimSpace(input) // Remove leading/trailing whitespace
-	re := regexp.MustCompile(`[^\w@.-]`)
+	// Only allow alphanumeric characters, underscores, and @ for email addresses
+	re := regexp.MustCompile(`[^\w@]`)
 	return re.ReplaceAllString(input, "") // Remove unwanted characters
 }
 
@@ -131,13 +122,13 @@ func loadedCommand(c *gin.Context) {
 
 	// Bind JSON payload to the struct
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		RespondBadRequest(c, "Invalid JSON payload: "+err.Error())
 		return
 	}
 
 	// Validate input
 	if payload.EspID == "" || len(payload.Commands) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ESP ID and commands are required"})
+		RespondBadRequest(c, "ESP ID and commands are required")
 		return
 	}
 
@@ -147,7 +138,7 @@ func loadedCommand(c *gin.Context) {
 	// Delete existing commands for the given ESP ID
 	if err := tx.Where("esp_id = ?", payload.EspID).Delete(&Command{}).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete existing commands"})
+		RespondInternalError(c, "Failed to delete existing commands")
 		return
 	}
 
@@ -156,18 +147,21 @@ func loadedCommand(c *gin.Context) {
 		newCommand := Command{EspID: payload.EspID, Command: cmd}
 		if err := tx.Create(&newCommand).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save commands"})
+			RespondInternalError(c, "Failed to save commands")
 			return
 		}
 	}
 
 	// Commit the transaction
 	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction"})
+		RespondInternalError(c, "Failed to commit transaction")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Commands saved successfully"})
+	RespondSuccessWithData(c, "Commands saved successfully", gin.H{
+		"esp_id":         payload.EspID,
+		"commands_count": len(payload.Commands),
+	})
 }
 
 // getLoadedCommand retrieves all commands associated with an ESP device
@@ -176,14 +170,14 @@ func getLoadedCommand(c *gin.Context) {
 
 	// Validate input
 	if espID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ESP ID is required"})
+		RespondBadRequest(c, "ESP ID is required")
 		return
 	}
 
 	// Fetch commands from database
 	var commands []Command
 	if err := db.Where("esp_id = ?", espID).Find(&commands).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve commands"})
+		RespondInternalError(c, "Failed to retrieve commands")
 		return
 	}
 
@@ -194,17 +188,21 @@ func getLoadedCommand(c *gin.Context) {
 	}
 
 	// Return commands in JSON response
-	c.JSON(http.StatusOK, gin.H{"esp_id": espID, "commands": commandList})
+	RespondSuccessWithData(c, "Commands retrieved successfully", gin.H{
+		"esp_id":   espID,
+		"commands": commandList,
+		"count":    len(commandList),
+	})
 }
 
 // registerUser handles the registration of a new user
 func registerUser(c *gin.Context) {
 	secretKey := c.PostForm("secret_key")
-	expectedSecretKey := os.Getenv("SECRET_KEY") // Expected secret key from environment variables
+	expectedSecretKey := serverConfig.Security.SecretKey
 
 	// Validate secret key
 	if secretKey != expectedSecretKey {
-		c.JSON(http.StatusForbidden, gin.H{"message": "Invalid secret key"})
+		RespondForbidden(c, "Invalid secret key")
 		return
 	}
 
@@ -213,7 +211,7 @@ func registerUser(c *gin.Context) {
 
 	// Validate input
 	if username == "" || password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Username and password are required"})
+		RespondBadRequest(c, "Username and password are required")
 		return
 	}
 
@@ -223,26 +221,26 @@ func registerUser(c *gin.Context) {
 	// Check if username already exists
 	var user User
 	if err := db.Where("username = ?", username).First(&user).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Username already exists"})
+		RespondConflict(c, "Username already exists")
 		return
 	}
 
 	// Create new user
 	newUser := User{Username: username}
 	if err := newUser.SetPassword(password); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to set password"})
+		RespondInternalError(c, "Failed to set password")
 		return
 	}
 	// Save user to database
 	if err := db.Create(&newUser).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to register user"})
+		RespondInternalError(c, "Failed to register user")
 		return
 	}
 
 	// Publish the user change to the cluster
 	publishUserChange(newUser, "create")
 
-	c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
+	RespondSuccess(c, "User registered successfully")
 }
 
 // login handles user login
@@ -252,7 +250,7 @@ func login(c *gin.Context) {
 
 	// Validate input
 	if username == "" || password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Username and password are required"})
+		RespondBadRequest(c, "Username and password are required")
 		return
 	}
 
@@ -262,31 +260,32 @@ func login(c *gin.Context) {
 	// Fetch user from database
 	var user User
 	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid username or password"})
+		RespondUnauthorized(c, "Invalid username or password")
 		return
 	}
 
 	// Check password
 	if !user.CheckPassword(password) {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid username or password"})
+		RespondUnauthorized(c, "Invalid username or password")
 		return
 	}
 
 	// Create session with maximum age and path settings
 	session := sessions.Default(c)
 	session.Options(sessions.Options{
-		MaxAge:   3600 * 24, // 24 hours
+		MaxAge:   serverConfig.Security.SessionMaxAge,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   serverConfig.Security.EnableHTTPS,
 	})
 	session.Set("user_id", user.ID)
 	session.Set("authenticated", true) // Add explicit authentication flag
 	if err := session.Save(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to create session"})
+		RespondInternalError(c, "Failed to create session")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Logged in successfully"})
+	RespondSuccess(c, "Logged in successfully")
 }
 
 // logout handles user logout
@@ -295,7 +294,7 @@ func logout(c *gin.Context) {
 	session.Clear()
 	session.Save()
 
-	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
+	RespondSuccess(c, "Logged out successfully")
 }
 
 // registerDevice handles registration of a new ESP device
@@ -305,7 +304,7 @@ func registerDevice(c *gin.Context) {
 
 	// Validate input
 	if espID == "" || espSecretKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and secret key are required"})
+		RespondBadRequest(c, "ESP ID and secret key are required")
 		return
 	}
 
@@ -316,20 +315,21 @@ func registerDevice(c *gin.Context) {
 	// Check if device already exists
 	var device ESPDevice
 	if err := db.Where("esp_id = ?", espID).First(&device).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID already exists"})
+		RespondConflict(c, "ESP ID already exists")
 		return
 	}
+
 	// Create new device
 	newDevice := ESPDevice{EspID: espID, EspSecretKey: espSecretKey}
 	if err := db.Create(&newDevice).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to register ESP32"})
+		RespondInternalError(c, "Failed to register ESP32")
 		return
 	}
 
 	// Publish the device change to the cluster
 	publishDeviceChange(newDevice, "create")
 
-	c.JSON(http.StatusOK, gin.H{"message": "ESP32 registered successfully", "esp_id": espID})
+	RespondSuccessWithData(c, "ESP32 registered successfully", gin.H{"esp_id": espID})
 }
 
 // removeDevice handles removal of an ESP device
@@ -339,7 +339,7 @@ func removeDevice(c *gin.Context) {
 
 	// Validate parameters
 	if espID == "" || espSecretKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and secret key are required"})
+		RespondBadRequest(c, "ESP ID and secret key are required")
 		return
 	}
 
@@ -350,19 +350,20 @@ func removeDevice(c *gin.Context) {
 	// Find device in database
 	var device ESPDevice
 	if err := db.Where("esp_id = ? AND esp_secret_key = ?", espID, espSecretKey).First(&device).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID or secret key"})
+		RespondBadRequest(c, "Invalid ESP ID or secret key")
 		return
 	}
+
 	// Delete the device
 	if err := db.Delete(&device).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to remove ESP32"})
+		RespondInternalError(c, "Failed to remove ESP32")
 		return
 	}
 
 	// Publish the device deletion to the cluster
 	publishDeviceChange(device, "delete")
 
-	c.JSON(http.StatusOK, gin.H{"message": "ESP32 removed successfully"})
+	RespondSuccess(c, "ESP32 removed successfully")
 }
 
 // command adds a new command for an ESP device
@@ -372,7 +373,7 @@ func command(c *gin.Context) {
 
 	// Validate input
 	if espID == "" || commandText == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and command are required"})
+		RespondBadRequest(c, "ESP ID and command are required")
 		return
 	}
 
@@ -383,20 +384,24 @@ func command(c *gin.Context) {
 	// Check if device exists
 	var device ESPDevice
 	if err := db.Where("esp_id = ?", espID).First(&device).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID"})
+		RespondBadRequest(c, "Invalid ESP ID")
 		return
 	}
+
 	// Create new command
 	newCommand := Command{EspID: espID, Command: commandText}
 	if err := db.Create(&newCommand).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to add command"})
+		RespondInternalError(c, "Failed to add command")
 		return
 	}
 
 	// Publish the command change to the cluster
 	publishCommandChange(newCommand, "create")
 
-	c.JSON(http.StatusOK, gin.H{"message": "Command added successfully"})
+	RespondSuccessWithData(c, "Command added successfully", gin.H{
+		"command_id": newCommand.ID,
+		"esp_id":     espID,
+	})
 }
 
 // getCommand allows a device to retrieve the next command
@@ -406,7 +411,7 @@ func getCommand(c *gin.Context) {
 
 	// Validate input
 	if espID == "" || espSecretKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and secret key are required"})
+		RespondBadRequest(c, "ESP ID and secret key are required")
 		return
 	}
 
@@ -417,7 +422,7 @@ func getCommand(c *gin.Context) {
 	// Verify the device
 	var device ESPDevice
 	if err := db.Where("esp_id = ? AND esp_secret_key = ?", espID, espSecretKey).First(&device).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID or secret key"})
+		RespondBadRequest(c, "Invalid ESP ID or secret key")
 		return
 	}
 
@@ -479,7 +484,10 @@ func getCommand(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"command": command.Command})
+	RespondSuccessWithData(c, "Command retrieved successfully", gin.H{
+		"command": command.Command,
+		"esp_id":  espID,
+	})
 }
 
 // removeCommand removes a specific command by ID
@@ -488,26 +496,30 @@ func removeCommand(c *gin.Context) {
 
 	// Validate input
 	if commandID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Command ID is required"})
+		RespondBadRequest(c, "Command ID is required")
 		return
 	}
 
 	// Find the command
 	var command Command
 	if err := db.First(&command, commandID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"message": "Command not found"})
+		RespondNotFound(c, "Command not found")
 		return
 	}
+
 	// Delete the command
 	if err := db.Delete(&command).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to remove command"})
+		RespondInternalError(c, "Failed to remove command")
 		return
 	}
 
 	// Publish the command deletion to the cluster
 	publishCommandChange(command, "delete")
 
-	c.JSON(http.StatusOK, gin.H{"message": "Command removed successfully"})
+	RespondSuccessWithData(c, "Command removed successfully", gin.H{
+		"command_id": commandID,
+		"esp_id":     command.EspID,
+	})
 }
 
 // getAllCommands retrieves all commands for an ESP device
@@ -516,7 +528,7 @@ func getAllCommands(c *gin.Context) {
 
 	// Validate input
 	if espID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID is required"})
+		RespondBadRequest(c, "ESP ID is required")
 		return
 	}
 
@@ -533,7 +545,11 @@ func getAllCommands(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"commands": commandList})
+	RespondSuccessWithData(c, "Commands retrieved successfully", gin.H{
+		"esp_id":   espID,
+		"commands": commandList,
+		"count":    len(commandList),
+	})
 }
 
 // getActiveBoards returns a list of devices that have been active within the last 2 minutes
@@ -545,7 +561,7 @@ func getActiveBoards(c *gin.Context) {
 
 	// Query to get all devices that have communicated recently
 	if err := db.Where("last_request_time > ?", fiveMinutesAgo).Find(&devices).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve active boards", "details": err.Error()})
+		RespondInternalError(c, "Failed to retrieve active boards")
 		return
 	}
 
@@ -583,7 +599,10 @@ func getActiveBoards(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards, "count": len(activeBoards)})
+	RespondSuccessWithData(c, "Active boards retrieved successfully", gin.H{
+		"active_boards": activeBoards,
+		"count":         len(activeBoards),
+	})
 }
 
 // CARGO
@@ -597,7 +616,7 @@ func cargoDelivery(c *gin.Context) {
 
 	// Validate input
 	if espID == "" || deliveryKey == "" || encryptionPassword == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ESP ID, delivery key, and encryption password are required"})
+		RespondBadRequest(c, "ESP ID, delivery key, and encryption password are required")
 		return
 	}
 
@@ -609,7 +628,7 @@ func cargoDelivery(c *gin.Context) {
 	// Retrieve the file from the form data
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "File upload failed", "details": err.Error()})
+		RespondBadRequest(c, "File upload failed: "+err.Error())
 		return
 	}
 	defer file.Close()
@@ -626,7 +645,7 @@ func cargoDelivery(c *gin.Context) {
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
 		err := os.Mkdir(outputDir, 0755)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory", "details": err.Error()})
+			RespondInternalError(c, "Failed to create directory")
 			return
 		}
 	}
@@ -635,14 +654,14 @@ func cargoDelivery(c *gin.Context) {
 	outputPath := filepath.Join(outputDir, fileName)
 	out, err := os.Create(outputPath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file", "details": err.Error()})
+		RespondInternalError(c, "Failed to save file")
 		return
 	}
 	defer out.Close()
 
 	// Copy the uploaded file to the output file
 	if _, err := io.Copy(out, file); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write file", "details": err.Error()})
+		RespondInternalError(c, "Failed to write file")
 		return
 	}
 
@@ -657,7 +676,7 @@ func cargoDelivery(c *gin.Context) {
 		RetryCount: 0,
 	}
 	if err := db.Create(&fileMetadata).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
+		RespondInternalError(c, "Failed to save file metadata")
 		return
 	}
 
@@ -670,9 +689,8 @@ func cargoDelivery(c *gin.Context) {
 		// Log the error but don't delete the file - the background service will retry
 		log.Printf("Warning: Failed to deliver file to Storage server: %v. Will retry later.", err)
 		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusPending)
-		c.JSON(http.StatusOK, gin.H{
-			"message": "received successfully",
-			"status":  StatusPending,
+		RespondSuccessWithData(c, "File received successfully", gin.H{
+			"status": StatusPending,
 		})
 		return
 	}
@@ -683,9 +701,8 @@ func cargoDelivery(c *gin.Context) {
 	if err != nil {
 		log.Printf("DEBUG: Failed to get file list: %v", err)
 		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusCompleted)
-		c.JSON(http.StatusOK, gin.H{
-			"message": "received successfully",
-			"status":  StatusCompleted,
+		RespondSuccessWithData(c, "File received successfully", gin.H{
+			"status": StatusCompleted,
 		})
 		return
 	}
@@ -701,9 +718,8 @@ func cargoDelivery(c *gin.Context) {
 		log.Printf("DEBUG: Failed to decode file list: %v", err)
 		log.Printf("DEBUG: Response body: %s", resp.Body)
 		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusCompleted)
-		c.JSON(http.StatusOK, gin.H{
-			"message": "received successfully",
-			"status":  StatusCompleted,
+		RespondSuccessWithData(c, "File received successfully", gin.H{
+			"status": StatusCompleted,
 		})
 		return
 	}
@@ -727,8 +743,7 @@ func cargoDelivery(c *gin.Context) {
 	}
 
 	log.Printf("DEBUG: Sending final response with message='delivered successfully', status=%s, file_id=%d", StatusCompleted, fileID)
-	c.JSON(http.StatusOK, gin.H{
-		"message": "delivered successfully",
+	RespondSuccessWithData(c, "File delivered successfully", gin.H{
 		"status":  StatusCompleted,
 		"file_id": fileID,
 	})
@@ -779,7 +794,7 @@ func registerMail(c *gin.Context) {
 
 	// Validate input
 	if espID == "" || deliveryKey == "" || encryptionPassword == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID, delivery key, and encryption password are required"})
+		RespondBadRequest(c, "ESP ID, delivery key, and encryption password are required")
 		return
 	}
 
@@ -791,7 +806,7 @@ func registerMail(c *gin.Context) {
 	// Check if device already exists
 	var device ESPDevice
 	if err := db.Where("esp_id = ?", espID).First(&device).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID already exists"})
+		RespondConflict(c, "ESP ID already exists")
 		return
 	}
 
@@ -803,11 +818,13 @@ func registerMail(c *gin.Context) {
 	}
 
 	if err := db.Create(&newDevice).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to register device"})
+		RespondInternalError(c, "Failed to register device")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Device registered successfully"})
+	RespondSuccessWithData(c, "Device registered successfully", gin.H{
+		"esp_id": espID,
+	})
 }
 
 // sendFileToStorage sends the file to the Storage server
@@ -890,7 +907,7 @@ func uploadFile(c *gin.Context) {
 	// Retrieve the file from the form data
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to get file"})
+		RespondBadRequest(c, "Failed to get file")
 		return
 	}
 	defer file.Close()
@@ -906,7 +923,7 @@ func uploadFile(c *gin.Context) {
 	// Create the output file
 	out, err := os.Create(filePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create file"})
+		RespondInternalError(c, "Failed to create file")
 		return
 	}
 	defer out.Close()
@@ -914,7 +931,7 @@ func uploadFile(c *gin.Context) {
 	// Copy the uploaded file to the output file
 	_, err = io.Copy(out, file)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+		RespondInternalError(c, "Failed to save file")
 		return
 	}
 
@@ -941,7 +958,7 @@ func authenticate(c *gin.Context) {
 
 	// Bind JSON payload to struct
 	if err := c.ShouldBindJSON(&login); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		RespondBadRequest(c, "Invalid request")
 		return
 	}
 
@@ -952,13 +969,13 @@ func authenticate(c *gin.Context) {
 	// Fetch user from database
 	var user User
 	if err := db.Where("username = ?", login.Username).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		RespondUnauthorized(c, "Invalid username or password")
 		return
 	}
 
 	// Check password
 	if !user.CheckPassword(login.Password) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		RespondUnauthorized(c, "Invalid username or password")
 		return
 	}
 
@@ -1067,7 +1084,7 @@ func isStorageServerOnline() bool {
 func startFileDeliveryService() {
 	go func() {
 		for {
-			time.Sleep(RetryInterval)
+			time.Sleep(time.Duration(RetryInterval) * time.Second)
 			retryPendingFiles()
 		}
 	}()

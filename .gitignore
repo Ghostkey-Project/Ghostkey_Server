@@ -1,12 +1,92 @@
+# Environment and configuration
 .env
+.env.local
+.env.development
+.env.test
+.env.production
+config.local.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+data.db
+data.db-journal
+database.db-journal
+
+# Application data
 data/
 cargo_files/
-*.db
+uploads/
+files/
+
+# Test files
 cookies.txt
 test/registered_boards.json
-database.db-journal
+test/__pycache__/
+test/*.pyc
+test/.pytest_cache/
+
+# IDE and editor files
 /.vscode
-/test
-data.db-journal
+.idea/
+*.swp
+*.swo
+
+# Python cache
 GhostkeyClient/__pycache__/
+__pycache__/
+*.pyc
+
+# Binaries
 *.exe
+*.dll
+*.so
+*.dylib
+ghostkey-server
+ghostkey-server-*
+main
+
+# Test binaries
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Logs
+*.log
+logs/
+
+# Security files
+*.pem
+*.key
+*.crt
+*.csr
+.secrets/
+secrets/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build artifacts
+vendor/
+dist/
+build/
+release/
+
+# Go workspace
+go.work

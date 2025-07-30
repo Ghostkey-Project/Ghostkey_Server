@@ -1,0 +1,40 @@
+{
+  "server": {
+    "interface": ":5000",
+    "port": 5000,
+    "read_timeout": 30,
+    "write_timeout": 30,
+    "idle_timeout": 120
+  },
+  "database": {
+    "type": "sqlite",
+    "path": "data.db"
+  },
+  "security": {
+    "session_max_age": 86400,
+    "rate_limit_requests": 100,
+    "rate_limit_window": 60,
+    "enable_https": false,
+    "cert_file": "",
+    "key_file": "",
+    "allowed_origins": [
+      "http://localhost:3000",
+      "http://localhost:5000",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:5000"
+    ]
+  },
+  "cluster": {
+    "enabled": false,
+    "node_id": "node-1",
+    "gossip_nodes": [],
+    "sync_interval": 60
+  },
+  "storage": {
+    "url": "http://localhost:6000",
+    "health_check_url": "http://localhost:6000/health",
+    "timeout": 30,
+    "retry_attempts": 5,
+    "retry_interval": 60
+  }
+}

@@ -72,7 +72,22 @@ var (
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 		CheckOrigin: func(r *http.Request) bool {
-			return true // Allow all connections in this example
+			// Only allow connections from localhost and configured gossip nodes
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // Allow connections without origin header (direct connections)
+			}
+			// Add your allowed origins here
+			allowedOrigins := []string{
+				"http://localhost:5000",
+				"http://127.0.0.1:5000",
+			}
+			for _, allowed := range allowedOrigins {
+				if origin == allowed {
+					return true
+				}
+			}
+			return false
 		},
 	}
 
