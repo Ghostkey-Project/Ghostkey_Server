@@ -3,12 +3,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -36,6 +39,12 @@ var (
 func main() {
 	var err error
 
+	// Initialize multi-threading and concurrent processing FIRST for maximum performance
+	log.Println("🚀 Initializing multi-threaded high-performance server...")
+	InitializeConcurrentProcessing()
+	OptimizeGarbageCollection()
+	StartPerformanceMonitor()
+
 	// Load server configuration
 	serverConfig, err = LoadConfig("config.json")
 	if err != nil {
@@ -54,17 +63,34 @@ func main() {
 		log.Fatalf("Failed to parse config file: %v", err)
 	}
 
-	// Initialize the SQLite database connection
+	// Initialize the SQLite database connection with optimized settings
 	db, err = gorm.Open(sqlite.Open(serverConfig.Database.Path), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
+	// Configure database connection pool for better concurrent performance
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("Failed to get underlying database connection: %v", err)
+	}
+
+	// Set connection pool settings for high concurrency
+	sqlDB.SetMaxIdleConns(25)           // Maximum number of idle connections
+	sqlDB.SetMaxOpenConns(100)          // Maximum number of open connections
+	sqlDB.SetConnMaxLifetime(time.Hour) // Maximum connection lifetime
+
+	log.Printf("Database connection pool configured: MaxIdle=%d, MaxOpen=%d, MaxLifetime=1h", 25, 100)
+
 	// Perform automatic schema migration
 	db.AutoMigrate(&User{}, &ESPDevice{}, &Command{}, &FileMetadata{}, &Counter{})
 
-	// Create a new Gin router for handling HTTP requests
+	// Create a new Gin router for handling HTTP requests with multi-threading optimizations
 	r := gin.Default()
+
+	// Add high-performance concurrent processing middleware FIRST
+	r.Use(ConcurrentRequestMiddleware())
+	r.Use(AsyncDatabaseOperationMiddleware())
 
 	// Add security middleware
 	r.Use(SecurityHeadersMiddleware())
@@ -91,7 +117,11 @@ func main() {
 	r.Use(sessions.Sessions("mysession", store))
 
 	// Register all the API routes
-	registerRoutes(r) // Initialize the sync system if cluster mode is enabled
+	registerRoutes(r) 
+	
+	// Add performance monitoring endpoint
+	r.GET("/performance", GetConcurrentStats())
+	r.GET("/stats", GetConcurrentStats()) // Initialize the sync system if cluster mode is enabled
 	if config.ClusterEnabled {
 		if config.NodeID == "" {
 			// Generate a random node ID if not provided
@@ -131,18 +161,62 @@ func main() {
 		}
 	}()
 
-	// Run the Gin server on the configured interface
-	if serverConfig.Security.EnableHTTPS && serverConfig.Security.CertFile != "" && serverConfig.Security.KeyFile != "" {
-		log.Printf("Starting HTTPS server on %s", serverConfig.Server.Interface)
-		if err := r.RunTLS(serverConfig.Server.Interface, serverConfig.Security.CertFile, serverConfig.Security.KeyFile); err != nil {
-			log.Fatalf("Failed to run HTTPS server: %v", err)
-		}
-	} else {
-		log.Printf("Starting HTTP server on %s", serverConfig.Server.Interface)
-		if err := r.Run(serverConfig.Server.Interface); err != nil {
-			log.Fatalf("Failed to run server: %v", err)
-		}
+	// Run the Gin server on the configured interface with optimized settings
+	server := &http.Server{
+		Addr:           serverConfig.Server.Interface,
+		Handler:        r,
+		ReadTimeout:    time.Duration(serverConfig.Server.ReadTimeout) * time.Second,
+		WriteTimeout:   time.Duration(serverConfig.Server.WriteTimeout) * time.Second,
+		IdleTimeout:    time.Duration(serverConfig.Server.IdleTimeout) * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
+
+	// Configure the server for high concurrency
+	server.SetKeepAlivesEnabled(true)
+
+	// Create a channel to listen for interrupt signals
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start server in a goroutine
+	go func() {
+		if serverConfig.Security.EnableHTTPS && serverConfig.Security.CertFile != "" && serverConfig.Security.KeyFile != "" {
+			log.Printf("Starting HTTPS server on %s with optimized settings", serverConfig.Server.Interface)
+			log.Printf("Server configuration: ReadTimeout=%ds, WriteTimeout=%ds, IdleTimeout=%ds", 
+				serverConfig.Server.ReadTimeout, serverConfig.Server.WriteTimeout, serverConfig.Server.IdleTimeout)
+			if err := server.ListenAndServeTLS(serverConfig.Security.CertFile, serverConfig.Security.KeyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Failed to run HTTPS server: %v", err)
+			}
+		} else {
+			log.Printf("Starting HTTP server on %s with optimized settings", serverConfig.Server.Interface)
+			log.Printf("Server configuration: ReadTimeout=%ds, WriteTimeout=%ds, IdleTimeout=%ds", 
+				serverConfig.Server.ReadTimeout, serverConfig.Server.WriteTimeout, serverConfig.Server.IdleTimeout)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Failed to run server: %v", err)
+			}
+		}
+	}()
+
+	log.Println("Server started successfully with high-concurrency optimizations")
+	log.Println("Press Ctrl+C to shutdown server...")
+
+	// Wait for interrupt signal
+	<-quit
+	log.Println("Shutting down server...")
+
+	// Create a context with timeout for graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Attempt graceful shutdown
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	} else {
+		log.Println("Server shutdown complete")
+	}
+	
+	// Shutdown concurrent processing
+	ShutdownConcurrentProcessing()
 }
 
 // startGossip starts the gossip protocol at regular intervals

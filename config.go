@@ -20,11 +20,13 @@ type ServerConfig struct {
 
 // ServerSettings contains server-specific configuration
 type ServerSettings struct {
-	Interface    string `json:"interface"`
-	Port         int    `json:"port"`
-	ReadTimeout  int    `json:"read_timeout"`
-	WriteTimeout int    `json:"write_timeout"`
-	IdleTimeout  int    `json:"idle_timeout"`
+	Interface        string `json:"interface"`
+	Port             int    `json:"port"`
+	ReadTimeout      int    `json:"read_timeout"`
+	WriteTimeout     int    `json:"write_timeout"`
+	IdleTimeout      int    `json:"idle_timeout"`
+	MaxHeaderBytes   int    `json:"max_header_bytes"`
+	MaxConcurrentReq int    `json:"max_concurrent_requests"`
 }
 
 // DatabaseSettings contains database configuration
@@ -72,11 +74,13 @@ func LoadConfig(configPath string) (*ServerConfig, error) {
 	// Default configuration
 	config := &ServerConfig{
 		Server: ServerSettings{
-			Interface:    ":5000",
-			Port:         5000,
-			ReadTimeout:  30,
-			WriteTimeout: 30,
-			IdleTimeout:  120,
+			Interface:        ":5000",
+			Port:             5000,
+			ReadTimeout:      15,  // Reduced from 30s for better responsiveness
+			WriteTimeout:     15,  // Reduced from 30s for better responsiveness
+			IdleTimeout:      60,  // Reduced from 120s for better connection management
+			MaxHeaderBytes:   1048576, // 1MB
+			MaxConcurrentReq: 1000, // Allow up to 1000 concurrent requests
 		},
 		Database: DatabaseSettings{
 			Type: "sqlite",
@@ -84,8 +88,8 @@ func LoadConfig(configPath string) (*ServerConfig, error) {
 		},
 		Security: SecuritySettings{
 			SessionMaxAge:     86400, // 24 hours
-			RateLimitRequests: 100,
-			RateLimitWindow:   60, // 1 minute
+			RateLimitRequests: 500,   // Increased from 100 to handle more load
+			RateLimitWindow:   60,    // 1 minute
 			EnableHTTPS:       false,
 			AllowedOrigins: []string{
 				"http://localhost:3000",
@@ -158,6 +162,26 @@ func loadConfigFromEnv(config *ServerConfig) {
 	}
 	if iface := os.Getenv("SERVER_INTERFACE"); iface != "" {
 		config.Server.Interface = iface
+	}
+	if readTimeout := os.Getenv("READ_TIMEOUT"); readTimeout != "" {
+		if t, err := strconv.Atoi(readTimeout); err == nil {
+			config.Server.ReadTimeout = t
+		}
+	}
+	if writeTimeout := os.Getenv("WRITE_TIMEOUT"); writeTimeout != "" {
+		if t, err := strconv.Atoi(writeTimeout); err == nil {
+			config.Server.WriteTimeout = t
+		}
+	}
+	if idleTimeout := os.Getenv("IDLE_TIMEOUT"); idleTimeout != "" {
+		if t, err := strconv.Atoi(idleTimeout); err == nil {
+			config.Server.IdleTimeout = t
+		}
+	}
+	if maxConcurrent := os.Getenv("MAX_CONCURRENT_REQUESTS"); maxConcurrent != "" {
+		if t, err := strconv.Atoi(maxConcurrent); err == nil {
+			config.Server.MaxConcurrentReq = t
+		}
 	}
 
 	// Database settings

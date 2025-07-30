@@ -14,10 +14,12 @@
   },
   "server": {
     "port": 5000,
-    "idle_timeout": 120,
+    "idle_timeout": 15,
     "interface": ":5000",
-    "write_timeout": 30,
-    "read_timeout": 30
+    "write_timeout": 5,
+    "read_timeout": 5,
+    "max_header_bytes": 1048576,
+    "max_concurrent_requests": 10000
   },
   "security": {
     "allowed_origins": [
@@ -31,7 +33,7 @@
     "key_file": "",
     "session_max_age": 86400,
     "enable_https": false,
-    "rate_limit_requests": 100
+    "rate_limit_requests": 50000
   },
   "database": {
     "path": "data.db",
