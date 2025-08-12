@@ -49,8 +49,28 @@ func authRequired() gin.HandlerFunc {
 		// If no valid session, check for Basic Auth
 		username, password, hasAuth := c.Request.BasicAuth()
 		if hasAuth {
-			// Sanitize input
-			username = sanitizeInput(username)
+			// Rate limiting check
+			clientIP := c.ClientIP()
+			if isRateLimited(clientIP, 10, time.Minute) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Rate limit exceeded"})
+				c.Abort()
+				return
+			}
+
+			// Sanitize and validate input
+			username = sanitizeUsername(username)
+			if !validateInput(username) || !validateLength(username, 1, 50) {
+				log.Printf("Security Warning: Invalid username format from IP %s: %s", clientIP, username)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input format"})
+				c.Abort()
+				return
+			}
+
+			if !validateLength(password, 1, 100) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid password length"})
+				c.Abort()
+				return
+			}
 
 			// Verify credentials
 			var user User
@@ -87,8 +107,44 @@ func healthCheck(c *gin.Context) {
 	})
 }
 
+// securityHeaders middleware adds security headers to all responses
+func securityHeaders() gin.HandlerFunc {
+	return gin.HandlerFunc(func(c *gin.Context) {
+		// Prevent XSS attacks
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+
+		// Content Security Policy
+		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; media-src 'self'; form-action 'self'; base-uri 'self';")
+
+		// Remove server information
+		c.Header("Server", "")
+
+		c.Next()
+	})
+}
+
+// requestSizeLimit middleware limits request body size
+func requestSizeLimit(maxSize int64) gin.HandlerFunc {
+	return gin.HandlerFunc(func(c *gin.Context) {
+		if c.Request.ContentLength > maxSize {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Request too large"})
+			c.Abort()
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize)
+		c.Next()
+	})
+}
+
 // registerRoutes sets up all the API endpoints for the server
 func registerRoutes(r *gin.Engine) {
+	// Add security middleware
+	r.Use(securityHeaders())
+	r.Use(requestSizeLimit(10 * 1024 * 1024)) // 10MB limit
+
 	// Health check endpoint (no authentication required)
 	r.GET("/", healthCheck) // Root path for basic connectivity check
 	r.GET("/health", healthCheck)
@@ -121,17 +177,17 @@ func registerRoutes(r *gin.Engine) {
 // sanitizeInput cleans the input string to prevent injection attacks
 func sanitizeInput(input string) string {
 	input = strings.TrimSpace(input) // Remove leading/trailing whitespace
-	
+
 	// Limit input length to prevent buffer overflow attacks
 	if len(input) > 1000 {
 		input = input[:1000]
 	}
-	
+
 	// Remove null bytes and control characters
 	input = strings.ReplaceAll(input, "\x00", "")
 	re := regexp.MustCompile(`[\x00-\x1f\x7f]`)
 	input = re.ReplaceAllString(input, "")
-	
+
 	return input
 }
 
@@ -169,7 +225,7 @@ func validateInput(input string) bool {
 		`\*`,
 		`%`,
 	}
-	
+
 	for _, pattern := range sqlPatterns {
 		matched, _ := regexp.MatchString(pattern, input)
 		if matched {
@@ -194,9 +250,9 @@ var rateLimitMutex sync.RWMutex
 func isRateLimited(ip string, maxRequests int, timeWindow time.Duration) bool {
 	rateLimitMutex.Lock()
 	defer rateLimitMutex.Unlock()
-	
+
 	now := time.Now()
-	
+
 	// Clean old entries
 	if requests, exists := rateLimitMap[ip]; exists {
 		var validRequests []time.Time
@@ -207,12 +263,12 @@ func isRateLimited(ip string, maxRequests int, timeWindow time.Duration) bool {
 		}
 		rateLimitMap[ip] = validRequests
 	}
-	
+
 	// Check if rate limit is exceeded
 	if len(rateLimitMap[ip]) >= maxRequests {
 		return true
 	}
-	
+
 	// Add current request
 	rateLimitMap[ip] = append(rateLimitMap[ip], now)
 	return false
@@ -292,11 +348,22 @@ func getLoadedCommand(c *gin.Context) {
 
 // registerUser handles the registration of a new user
 func registerUser(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 5, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	secretKey := c.PostForm("secret_key")
 	expectedSecretKey := os.Getenv("SECRET_KEY") // Expected secret key from environment variables
+	if expectedSecretKey == "" {
+		expectedSecretKey = loadSecretFromFile()
+	}
 
 	// Validate secret key
 	if secretKey != expectedSecretKey {
+		log.Printf("Security Warning: Invalid secret key attempt from IP %s", clientIP)
 		c.JSON(http.StatusForbidden, gin.H{"message": "Invalid secret key"})
 		return
 	}
@@ -310,8 +377,18 @@ func registerUser(c *gin.Context) {
 		return
 	}
 
-	// Sanitize username only
-	username = sanitizeInput(username)
+	// Enhanced input validation
+	username = sanitizeUsername(username)
+	if !validateInput(username) || !validateLength(username, 3, 50) {
+		log.Printf("Security Warning: Invalid username format from IP %s: %s", clientIP, username)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid username format"})
+		return
+	}
+
+	if !validateLength(password, 8, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Password must be between 8 and 100 characters"})
+		return
+	}
 
 	// Check if username already exists
 	var user User
@@ -340,6 +417,13 @@ func registerUser(c *gin.Context) {
 
 // login handles user login
 func login(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 10, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	username := c.PostForm("username")
 	password := c.PostForm("password")
 
@@ -349,8 +433,18 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Sanitize username only
-	username = sanitizeInput(username)
+	// Enhanced input validation
+	username = sanitizeUsername(username)
+	if !validateInput(username) || !validateLength(username, 1, 50) {
+		log.Printf("Security Warning: Invalid username format from IP %s: %s", clientIP, username)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid input format"})
+		return
+	}
+
+	if !validateLength(password, 1, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid password length"})
+		return
+	}
 
 	// Fetch user from database
 	var user User
@@ -393,6 +487,13 @@ func logout(c *gin.Context) {
 
 // registerDevice handles registration of a new ESP device
 func registerDevice(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 20, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	espID := c.PostForm("esp_id")
 	espSecretKey := c.PostForm("esp_secret_key")
 
@@ -402,9 +503,20 @@ func registerDevice(c *gin.Context) {
 		return
 	}
 
-	// Sanitize inputs
-	espID = sanitizeInput(espID)
-	espSecretKey = sanitizeInput(espSecretKey)
+	// Enhanced input validation
+	espID = sanitizeAlphanumeric(espID)
+	espSecretKey = sanitizeAlphanumeric(espSecretKey)
+
+	if !validateInput(espID) || !validateLength(espID, 3, 50) {
+		log.Printf("Security Warning: Invalid ESP ID format from IP %s: %s", clientIP, espID)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID format"})
+		return
+	}
+
+	if !validateInput(espSecretKey) || !validateLength(espSecretKey, 8, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid secret key format"})
+		return
+	}
 
 	// Check if device already exists
 	var device ESPDevice
@@ -427,6 +539,13 @@ func registerDevice(c *gin.Context) {
 
 // removeDevice handles removal of an ESP device
 func removeDevice(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 10, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	espID := c.Query("esp_id")
 	espSecretKey := c.Query("secret_key") // Changed from esp_secret_key to match test expectations
 
@@ -436,9 +555,20 @@ func removeDevice(c *gin.Context) {
 		return
 	}
 
-	// Sanitize inputs
-	espID = sanitizeInput(espID)
-	espSecretKey = sanitizeInput(espSecretKey)
+	// Enhanced input validation
+	espID = sanitizeAlphanumeric(espID)
+	espSecretKey = sanitizeAlphanumeric(espSecretKey)
+
+	if !validateInput(espID) || !validateLength(espID, 3, 50) {
+		log.Printf("Security Warning: Invalid ESP ID format from IP %s: %s", clientIP, espID)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID format"})
+		return
+	}
+
+	if !validateInput(espSecretKey) || !validateLength(espSecretKey, 8, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid secret key format"})
+		return
+	}
 
 	// Find device in database
 	var device ESPDevice
@@ -460,6 +590,13 @@ func removeDevice(c *gin.Context) {
 
 // command adds a new command for an ESP device
 func command(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 30, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	espID := c.PostForm("esp_id")
 	commandText := c.PostForm("command")
 
@@ -469,9 +606,21 @@ func command(c *gin.Context) {
 		return
 	}
 
-	// Sanitize inputs
-	espID = sanitizeInput(espID)
-	commandText = sanitizeInput(commandText)
+	// Enhanced input validation
+	espID = sanitizeAlphanumeric(espID)
+	commandText = sanitizeInput(commandText) // Allow more characters for commands
+
+	if !validateInput(espID) || !validateLength(espID, 3, 50) {
+		log.Printf("Security Warning: Invalid ESP ID format from IP %s: %s", clientIP, espID)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID format"})
+		return
+	}
+
+	if !validateInput(commandText) || !validateLength(commandText, 1, 500) {
+		log.Printf("Security Warning: Invalid command format from IP %s: %s", clientIP, commandText)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid command format"})
+		return
+	}
 
 	// Check if device exists
 	var device ESPDevice
@@ -762,7 +911,6 @@ func cargoDelivery(c *gin.Context) {
 	if err != nil {
 		// Log the error but don't delete the file - the background service will retry
 		log.Printf("Warning: Failed to deliver file to Storage server: %v. Will retry later.", err)
-		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusPending)
 		c.JSON(http.StatusOK, gin.H{
 			"message": "received successfully",
 			"status":  StatusPending,
@@ -774,8 +922,6 @@ func cargoDelivery(c *gin.Context) {
 	client := &http.Client{}
 	resp, err := client.Get("http://localhost:6000/list_files")
 	if err != nil {
-		log.Printf("DEBUG: Failed to get file list: %v", err)
-		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusCompleted)
 		c.JSON(http.StatusOK, gin.H{
 			"message": "received successfully",
 			"status":  StatusCompleted,
@@ -791,9 +937,6 @@ func cargoDelivery(c *gin.Context) {
 		} `json:"files"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&filesResp); err != nil {
-		log.Printf("DEBUG: Failed to decode file list: %v", err)
-		log.Printf("DEBUG: Response body: %s", resp.Body)
-		log.Printf("DEBUG: Sending response with message='received successfully', status=%s", StatusCompleted)
 		c.JSON(http.StatusOK, gin.H{
 			"message": "received successfully",
 			"status":  StatusCompleted,
@@ -805,9 +948,7 @@ func cargoDelivery(c *gin.Context) {
 	var fileID uint
 	if len(filesResp.Files) > 0 {
 		fileID = filesResp.Files[len(filesResp.Files)-1].ID
-		log.Printf("DEBUG: Found file ID: %d", fileID)
 	} else {
-		log.Printf("DEBUG: No files found in response")
 	}
 
 	// Success! Update status and delete local file
@@ -819,7 +960,6 @@ func cargoDelivery(c *gin.Context) {
 		log.Printf("Warning: Failed to delete local file %s: %v", outputPath, err)
 	}
 
-	log.Printf("DEBUG: Sending final response with message='delivered successfully', status=%s, file_id=%d", StatusCompleted, fileID)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "delivered successfully",
 		"status":  StatusCompleted,
@@ -1148,7 +1288,10 @@ func addCommand(c *gin.Context) {
 
 // isStorageServerOnline checks if the storage server is responding
 func isStorageServerOnline() bool {
-	resp, err := http.Get("http://localhost:6000/health")
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Get("http://localhost:6000/health")
 	if err != nil {
 		return false
 	}

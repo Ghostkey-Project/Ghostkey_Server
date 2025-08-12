@@ -301,8 +301,11 @@ func sendGossipToNode(node *NodeInfo) {
 	// Create the URL
 	url := fmt.Sprintf("http://%s/gossip", node.Address)
 
-	// Send the request
-	resp, err := http.Post(url, "application/json", bytes.NewReader(payloadBytes))
+	// Send the request with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payloadBytes))
 	if err != nil {
 		log.Printf("Failed to gossip with %s: %v", node.Address, err)
 		markNodeInactive(node.ID)

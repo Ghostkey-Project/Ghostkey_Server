@@ -4,13 +4,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -52,6 +56,41 @@ func loadSecretFromFile() string {
 	return ""
 }
 
+// backupDatabase creates a backup of the database
+func backupDatabase() {
+	backupDir := "./backups"
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		log.Printf("Failed to create backup directory: %v", err)
+		return
+	}
+
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	backupFile := fmt.Sprintf("%s/data_%s.db", backupDir, timestamp)
+
+	// Copy the database file
+	input, err := os.Open("data.db")
+	if err != nil {
+		log.Printf("Failed to open database for backup: %v", err)
+		return
+	}
+	defer input.Close()
+
+	output, err := os.Create(backupFile)
+	if err != nil {
+		log.Printf("Failed to create backup file: %v", err)
+		return
+	}
+	defer output.Close()
+
+	_, err = io.Copy(output, input)
+	if err != nil {
+		log.Printf("Failed to copy database: %v", err)
+		return
+	}
+
+	log.Printf("Database backup created: %s", backupFile)
+}
+
 func main() {
 	var err error
 	// Load configuration from config.json file
@@ -72,11 +111,28 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
+	// Configure database connection pool for better performance
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("Failed to get database instance: %v", err)
+	}
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+
 	// Perform automatic schema migration
 	db.AutoMigrate(&User{}, &ESPDevice{}, &Command{}, &FileMetadata{}, &Counter{})
 
 	// Create a new Gin router for handling HTTP requests
+	// Set Gin mode based on environment
+	ginMode := os.Getenv("GIN_MODE")
+	if ginMode == "release" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	r := gin.Default()
+
+	// Add panic recovery middleware
+	r.Use(gin.Recovery())
 
 	// Retrieve secret key from environment variables for session store
 	secretKey := os.Getenv("SECRET_KEY")
@@ -88,14 +144,24 @@ func main() {
 		}
 	}
 
-	log.Printf("Using secret key: %s", secretKey)
+	log.Printf("Using secret key: [REDACTED - Length: %d characters]", len(secretKey))
 
 	// Set up session middleware using the secret key
 	store := cookie.NewStore([]byte(secretKey))
 	r.Use(sessions.Sessions("mysession", store))
 
 	// Register all the API routes
-	registerRoutes(r) // Initialize the sync system if cluster mode is enabled
+	registerRoutes(r)
+
+	// Start periodic database backup (every 6 hours)
+	go func() {
+		backupTicker := time.NewTicker(6 * time.Hour)
+		for range backupTicker.C {
+			backupDatabase()
+		}
+	}()
+
+	// Initialize the sync system if cluster mode is enabled
 	if config.ClusterEnabled {
 		if config.NodeID == "" {
 			// Generate a random node ID if not provided
@@ -135,9 +201,37 @@ func main() {
 		}
 	}()
 
-	// Run the Gin server on the configured interface
-	if err := r.Run(config.ServerInterface); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// Create HTTP server for graceful shutdown
+	srv := &http.Server{
+		Addr:    config.ServerInterface,
+		Handler: r,
+	}
+
+	// Start server in a goroutine
+	go func() {
+		log.Printf("Starting Ghostkey Server on %s", config.ServerInterface)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to run server: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shut down the server
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	// Create a final backup before shutdown
+	backupDatabase()
+
+	// Give the server 30 seconds to finish current requests
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	} else {
+		log.Println("Server shutdown complete")
 	}
 }
 
@@ -193,8 +287,11 @@ func gossip() {
 		return
 	}
 
-	// Send the payload to the target node
-	resp, err := http.Post(targetNode+"/gossip", "application/json", bytes.NewReader(payloadBytes))
+	// Send the payload to the target node with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Post(targetNode+"/gossip", "application/json", bytes.NewReader(payloadBytes))
 	if err != nil {
 		log.Printf("Failed to gossip with %s: %v", targetNode, err)
 		return
