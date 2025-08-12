@@ -1019,8 +1019,8 @@ func registerMail(c *gin.Context) {
 	// Sanitize inputs
 	espID = sanitizeInput(espID)
 	deliveryKey = sanitizeInput(deliveryKey)
-	encryptionPassword = sanitizeInput(encryptionPassword)
-
+	// Since we're not using encryptionPassword in this function, we can remove its sanitization
+	
 	// Check if device already exists
 	var device ESPDevice
 	if err := db.Where("esp_id = ?", espID).First(&device).Error; err == nil {
