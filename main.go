@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -31,6 +33,24 @@ var (
 	db     *gorm.DB
 	config Config
 )
+
+// loadSecretFromFile loads the SECRET_KEY from .secrets file
+func loadSecretFromFile() string {
+	file, err := os.Open(".secrets")
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "SECRET_KEY=") {
+			return strings.TrimPrefix(line, "SECRET_KEY=")
+		}
+	}
+	return ""
+}
 
 func main() {
 	var err error
@@ -61,7 +81,11 @@ func main() {
 	// Retrieve secret key from environment variables for session store
 	secretKey := os.Getenv("SECRET_KEY")
 	if secretKey == "" {
-		log.Fatalf("SECRET_KEY environment variable is required")
+		// Try to load from secrets file
+		secretKey = loadSecretFromFile()
+		if secretKey == "" {
+			log.Fatalf("SECRET_KEY environment variable is required or .secrets file not found")
+		}
 	}
 
 	log.Printf("Using secret key: %s", secretKey)

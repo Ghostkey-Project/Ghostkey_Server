@@ -121,8 +121,101 @@ func registerRoutes(r *gin.Engine) {
 // sanitizeInput cleans the input string to prevent injection attacks
 func sanitizeInput(input string) string {
 	input = strings.TrimSpace(input) // Remove leading/trailing whitespace
+	
+	// Limit input length to prevent buffer overflow attacks
+	if len(input) > 1000 {
+		input = input[:1000]
+	}
+	
+	// Remove null bytes and control characters
+	input = strings.ReplaceAll(input, "\x00", "")
+	re := regexp.MustCompile(`[\x00-\x1f\x7f]`)
+	input = re.ReplaceAllString(input, "")
+	
+	return input
+}
+
+// sanitizeAlphanumeric allows only alphanumeric characters, underscores, hyphens, and dots
+func sanitizeAlphanumeric(input string) string {
+	input = sanitizeInput(input)
+	re := regexp.MustCompile(`[^\w.-]`)
+	return re.ReplaceAllString(input, "")
+}
+
+// sanitizeUsername allows alphanumeric characters, underscores, hyphens, dots, and @ symbol
+func sanitizeUsername(input string) string {
+	input = sanitizeInput(input)
 	re := regexp.MustCompile(`[^\w@.-]`)
-	return re.ReplaceAllString(input, "") // Remove unwanted characters
+	return re.ReplaceAllString(input, "")
+}
+
+// validateInput checks for common SQL injection patterns
+func validateInput(input string) bool {
+	// Common SQL injection patterns
+	sqlPatterns := []string{
+		`(?i)(union\s+select)`,
+		`(?i)(select\s+.*\s+from)`,
+		`(?i)(drop\s+table)`,
+		`(?i)(delete\s+from)`,
+		`(?i)(insert\s+into)`,
+		`(?i)(update\s+.*\s+set)`,
+		`(?i)(exec\s*\()`,
+		`(?i)(script\s*>)`,
+		`(?i)(<\s*script)`,
+		`--`,
+		`;`,
+		`'.*'`,
+		`".*"`,
+		`\*`,
+		`%`,
+	}
+	
+	for _, pattern := range sqlPatterns {
+		matched, _ := regexp.MatchString(pattern, input)
+		if matched {
+			log.Printf("Security Warning: Potential SQL injection detected: %s", input)
+			return false
+		}
+	}
+	return true
+}
+
+// validateLength validates input length constraints
+func validateLength(input string, minLen, maxLen int) bool {
+	length := len(input)
+	return length >= minLen && length <= maxLen
+}
+
+// Rate limiting map to track requests per IP
+var rateLimitMap = make(map[string][]time.Time)
+var rateLimitMutex sync.RWMutex
+
+// isRateLimited checks if an IP has exceeded rate limits
+func isRateLimited(ip string, maxRequests int, timeWindow time.Duration) bool {
+	rateLimitMutex.Lock()
+	defer rateLimitMutex.Unlock()
+	
+	now := time.Now()
+	
+	// Clean old entries
+	if requests, exists := rateLimitMap[ip]; exists {
+		var validRequests []time.Time
+		for _, reqTime := range requests {
+			if now.Sub(reqTime) <= timeWindow {
+				validRequests = append(validRequests, reqTime)
+			}
+		}
+		rateLimitMap[ip] = validRequests
+	}
+	
+	// Check if rate limit is exceeded
+	if len(rateLimitMap[ip]) >= maxRequests {
+		return true
+	}
+	
+	// Add current request
+	rateLimitMap[ip] = append(rateLimitMap[ip], now)
+	return false
 }
 
 // loadedCommand replaces existing commands for an ESP device with a new list

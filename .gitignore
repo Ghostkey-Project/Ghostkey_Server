@@ -1,4 +1,5 @@
 .env
+.secrets
 data/
 cargo_files/
 *.db
@@ -10,3 +11,4 @@ database.db-journal
 data.db-journal
 GhostkeyClient/__pycache__/
 *.exe
+test.creds
