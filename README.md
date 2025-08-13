@@ -11,6 +11,24 @@ C2 server for the Ghostkey project.
 
 ## Usage
 
+⚠️ **Security Notice**: This server handles command and control operations. Proper security configuration is essential before deployment.
+
+### Security Requirements
+
+1. **Strong Secret Key**: Never use default secret keys. Generate a strong secret key:
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. **Environment Setup**: Set the environment variable with your strong secret key:
+   ```bash
+   export SECRET_KEY=your-generated-secret-key-here
+   ```
+
+3. **HTTPS**: Always use HTTPS in production environments.
+
+### Quick Start
+
 1. Set the environment variable:
     - `SECRET_KEY` as an environment variable or in your deployment environment.
 
@@ -35,6 +53,20 @@ exit status 1
 ```
 
 to fix it run these `sudo apt install build-essential`
+
+### Security Features
+
+This server includes comprehensive security measures:
+
+- **Authentication**: Secure session management with bcrypt password hashing
+- **Input Validation**: Protection against SQL injection and XSS attacks
+- **Rate Limiting**: Brute force attack protection
+- **File Upload Security**: Validation and sanitization of uploaded files
+- **Audit Logging**: Security event tracking and monitoring
+- **Container Security**: Non-root execution, minimal capabilities, read-only filesystem
+- **Network Security**: CORS configuration, security headers, HTTPS support
+
+For detailed security information, see [SECURITY.md](SECURITY.md).
 
 ## Routes
 

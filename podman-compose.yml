@@ -32,7 +32,7 @@ services:
     
     # Environment variables
     environment:
-      - SECRET_KEY=${SECRET_KEY:-default-secret-key-change-in-production}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY environment variable is required}
       - GIN_MODE=release
     
     # Volume mounts for persistent data

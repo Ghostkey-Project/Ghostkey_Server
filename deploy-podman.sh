@@ -9,6 +9,7 @@ set -euo pipefail
 IMAGE_NAME="ghostkey-server"
 CONTAINER_NAME="ghostkey-server"
 DATA_DIR="./data"
+CARGO_DIR="./cargo_files"
 CONFIG_FILE="./config.json"
 SECRETS_FILE="./.secrets"
 
@@ -44,10 +45,12 @@ check_podman() {
 create_directories() {
     log "Creating necessary directories..."
     mkdir -p "$DATA_DIR"
+    mkdir -p "$CARGO_DIR"
     
     # Set proper permissions for rootless containers
     # UID 65532 is the nonroot user in distroless images
     chmod 755 "$DATA_DIR"
+    chmod 755 "$CARGO_DIR"
     
     # Make config file readable by all
     chmod 644 "$CONFIG_FILE"
@@ -89,6 +92,12 @@ generate_secret() {
         
         log "Generated and saved SECRET_KEY to $SECRETS_FILE"
         log "Please keep this file secure and do not commit it to version control!"
+        
+        # Validate the generated key meets security requirements
+        if [[ ${#SECRET_KEY} -lt 32 ]]; then
+            error "Generated secret key is too short. Please check openssl installation."
+            exit 1
+        fi
     fi
 }
 

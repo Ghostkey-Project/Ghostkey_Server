@@ -56,6 +56,65 @@ func loadSecretFromFile() string {
 	return ""
 }
 
+// validateSecretKey ensures the secret key meets security requirements
+func validateSecretKey(key string) error {
+	if len(key) < 32 {
+		return fmt.Errorf("secret key must be at least 32 characters long")
+	}
+	
+	// Check for default/weak keys
+	weakKeys := []string{
+		"test_secret_key",
+		"default-secret-key-change-in-production",
+		"secret",
+		"password",
+		"12345",
+		"your_secret_key",
+	}
+	
+	for _, weak := range weakKeys {
+		if key == weak {
+			return fmt.Errorf("using default or weak secret key is not allowed")
+		}
+	}
+	
+	// Check for sufficient entropy (should contain mix of characters)
+	hasLower := false
+	hasUpper := false
+	hasDigit := false
+	hasSpecial := false
+	
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		default:
+			hasSpecial = true
+		}
+	}
+	
+	entropyTypes := 0
+	if hasLower { entropyTypes++ }
+	if hasUpper { entropyTypes++ }
+	if hasDigit { entropyTypes++ }
+	if hasSpecial { entropyTypes++ }
+	
+	if entropyTypes < 3 {
+		return fmt.Errorf("secret key must contain at least 3 different character types (lowercase, uppercase, digits, special characters)")
+	}
+	
+	return nil
+}
+
+// isProduction checks if the application is running in production mode
+func isProduction() bool {
+	return gin.Mode() == gin.ReleaseMode
+}
+
 // backupDatabase creates a backup of the database
 func backupDatabase() {
 	backupDir := "./backups"
@@ -111,6 +170,11 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
+	// Set secure permissions on database file
+	if err := os.Chmod("data.db", 0600); err != nil {
+		log.Printf("Warning: Failed to set database file permissions: %v", err)
+	}
+
 	// Configure database connection pool for better performance
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -144,11 +208,22 @@ func main() {
 		}
 	}
 
-	log.Printf("Using secret key: [REDACTED - Length: %d characters]", len(secretKey))
+	// Validate secret key strength
+	if err := validateSecretKey(secretKey); err != nil {
+		log.Fatalf("Invalid secret key: %v", err)
+	}
+	log.Printf("Secret key loaded successfully")
 
-	// Set up session middleware using the secret key
+	// Set up session middleware using the secret key with enhanced security
 	store := cookie.NewStore([]byte(secretKey))
-	r.Use(sessions.Sessions("mysession", store))
+	store.Options(sessions.Options{
+		Path:     "/",
+		MaxAge:   3600 * 24, // 24 hours
+		HttpOnly: true,
+		Secure:   isProduction(), // Set secure flag in production
+		SameSite: http.SameSiteStrictMode,
+	})
+	r.Use(sessions.Sessions("ghostkey_session", store))
 
 	// Register all the API routes
 	registerRoutes(r)

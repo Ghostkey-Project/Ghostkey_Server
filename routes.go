@@ -75,17 +75,20 @@ func authRequired() gin.HandlerFunc {
 			// Verify credentials
 			var user User
 			if err := db.Where("username = ?", username).First(&user).Error; err != nil {
+				auditLog("AUTH_FAILED", clientIP, username, "Invalid username")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				c.Abort()
 				return
 			}
 
 			if !user.CheckPassword(password) {
+				auditLog("AUTH_FAILED", clientIP, username, "Invalid password")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				c.Abort()
 				return
 			}
 
+			auditLog("AUTH_SUCCESS", clientIP, username, "Basic authentication successful")
 			// Set user ID in context
 			c.Set("user_id", user.ID)
 			c.Next()
@@ -119,9 +122,52 @@ func securityHeaders() gin.HandlerFunc {
 		// Content Security Policy
 		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; media-src 'self'; form-action 'self'; base-uri 'self';")
 
+		// Additional security headers
+		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
+		c.Header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		
 		// Remove server information
 		c.Header("Server", "")
 
+		c.Next()
+	})
+}
+
+// corsHeaders middleware adds CORS headers
+func corsHeaders() gin.HandlerFunc {
+	return gin.HandlerFunc(func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+		
+		// Allow specific origins or localhost for development
+		allowedOrigins := []string{
+			"https://localhost",
+			"https://127.0.0.1",
+		}
+		
+		// In development mode, allow localhost with any port
+		if gin.Mode() != gin.ReleaseMode {
+			if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") {
+				allowedOrigins = append(allowedOrigins, origin)
+			}
+		}
+		
+		for _, allowed := range allowedOrigins {
+			if origin == allowed {
+				c.Header("Access-Control-Allow-Origin", origin)
+				break
+			}
+		}
+		
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+		c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Max-Age", "86400")
+		
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		
 		c.Next()
 	})
 }
@@ -142,6 +188,7 @@ func requestSizeLimit(maxSize int64) gin.HandlerFunc {
 // registerRoutes sets up all the API endpoints for the server
 func registerRoutes(r *gin.Engine) {
 	// Add security middleware
+	r.Use(corsHeaders())
 	r.Use(securityHeaders())
 	r.Use(requestSizeLimit(10 * 1024 * 1024)) // 10MB limit
 
@@ -274,6 +321,52 @@ func isRateLimited(ip string, maxRequests int, timeWindow time.Duration) bool {
 	return false
 }
 
+// validateFileUpload validates uploaded files for security
+func validateFileUpload(header *multipart.FileHeader) error {
+	// Check file size (max 100MB)
+	const maxFileSize = 100 * 1024 * 1024
+	if header.Size > maxFileSize {
+		return fmt.Errorf("file too large: %d bytes (max %d bytes)", header.Size, maxFileSize)
+	}
+	
+	// Validate filename to prevent directory traversal
+	filename := header.Filename
+	if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+		return fmt.Errorf("invalid filename: contains path traversal characters")
+	}
+	
+	// Check for dangerous file extensions
+	dangerousExts := []string{
+		".exe", ".bat", ".cmd", ".com", ".pif", ".scr", ".vbs", ".js", ".jar",
+		".php", ".asp", ".aspx", ".jsp", ".sh", ".bash", ".ps1", ".msi",
+	}
+	
+	lowerFilename := strings.ToLower(filename)
+	for _, ext := range dangerousExts {
+		if strings.HasSuffix(lowerFilename, ext) {
+			return fmt.Errorf("dangerous file type not allowed: %s", ext)
+		}
+	}
+	
+	// Validate filename length
+	if len(filename) > 255 {
+		return fmt.Errorf("filename too long: %d characters (max 255)", len(filename))
+	}
+	
+	// Check for null bytes in filename
+	if strings.Contains(filename, "\x00") {
+		return fmt.Errorf("filename contains null bytes")
+	}
+	
+	return nil
+}
+
+// auditLog logs security-relevant events
+func auditLog(event, clientIP, username, details string) {
+	log.Printf("AUDIT: Event=%s ClientIP=%s Username=%s Details=%s Timestamp=%s", 
+		event, clientIP, username, details, time.Now().UTC().Format(time.RFC3339))
+}
+
 // loadedCommand replaces existing commands for an ESP device with a new list
 func loadedCommand(c *gin.Context) {
 	var payload LoadedCommandPayload
@@ -356,6 +449,9 @@ func registerUser(c *gin.Context) {
 	}
 
 	secretKey := c.PostForm("secret_key")
+	username := c.PostForm("username")
+	password := c.PostForm("password")
+	
 	expectedSecretKey := os.Getenv("SECRET_KEY") // Expected secret key from environment variables
 	if expectedSecretKey == "" {
 		expectedSecretKey = loadSecretFromFile()
@@ -363,13 +459,11 @@ func registerUser(c *gin.Context) {
 
 	// Validate secret key
 	if secretKey != expectedSecretKey {
+		auditLog("USER_REGISTER_FAILED", clientIP, username, "Invalid secret key")
 		log.Printf("Security Warning: Invalid secret key attempt from IP %s", clientIP)
 		c.JSON(http.StatusForbidden, gin.H{"message": "Invalid secret key"})
 		return
 	}
-
-	username := c.PostForm("username")
-	password := c.PostForm("password")
 
 	// Validate input
 	if username == "" || password == "" {
@@ -412,6 +506,7 @@ func registerUser(c *gin.Context) {
 	// Publish the user change to the cluster
 	publishUserChange(newUser, "create")
 
+	auditLog("USER_REGISTER_SUCCESS", clientIP, username, "User registered successfully")
 	c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
 }
 
@@ -449,22 +544,29 @@ func login(c *gin.Context) {
 	// Fetch user from database
 	var user User
 	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
+		auditLog("LOGIN_FAILED", clientIP, username, "Invalid username")
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid username or password"})
 		return
 	}
 
 	// Check password
 	if !user.CheckPassword(password) {
+		auditLog("LOGIN_FAILED", clientIP, username, "Invalid password")
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid username or password"})
 		return
 	}
 
 	// Create session with maximum age and path settings
 	session := sessions.Default(c)
+	
+	// Regenerate session ID to prevent session fixation attacks
+	session.Clear()
 	session.Options(sessions.Options{
 		MaxAge:   3600 * 24, // 24 hours
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   gin.Mode() == gin.ReleaseMode, // Set secure flag in production
+		SameSite: http.SameSiteStrictMode,
 	})
 	session.Set("user_id", user.ID)
 	session.Set("authenticated", true) // Add explicit authentication flag
@@ -473,6 +575,7 @@ func login(c *gin.Context) {
 		return
 	}
 
+	auditLog("LOGIN_SUCCESS", clientIP, username, "User logged in successfully")
 	c.JSON(http.StatusOK, gin.H{"message": "Logged in successfully"})
 }
 
@@ -573,6 +676,7 @@ func removeDevice(c *gin.Context) {
 	// Find device in database
 	var device ESPDevice
 	if err := db.Where("esp_id = ? AND esp_secret_key = ?", espID, espSecretKey).First(&device).Error; err != nil {
+		auditLog("DEVICE_ACCESS_FAILED", clientIP, espID, "Invalid device credentials")
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID or secret key"})
 		return
 	}
@@ -643,6 +747,12 @@ func command(c *gin.Context) {
 
 // getCommand allows a device to retrieve the next command
 func getCommand(c *gin.Context) {
+	// Rate limiting check for device command retrieval
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 60, time.Minute) { // Allow 60 requests per minute for device polling
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
 	espID := c.Query("esp_id")
 	espSecretKey := c.Query("esp_secret_key")
 
@@ -851,10 +961,17 @@ func cargoDelivery(c *gin.Context) {
 	// Retrieve the file from the form data
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "File upload failed", "details": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File upload failed"})
 		return
 	}
 	defer file.Close()
+
+	// Validate file upload security
+	if err := validateFileUpload(header); err != nil {
+		log.Printf("Security Warning: File upload validation failed from IP %s: %v", c.ClientIP(), err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File validation failed"})
+		return
+	}
 
 	// Generate a unique ID for the file
 	uniqueID := getNextID()
@@ -868,7 +985,7 @@ func cargoDelivery(c *gin.Context) {
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
 		err := os.Mkdir(outputDir, 0755)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory", "details": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory"})
 			return
 		}
 	}
@@ -877,14 +994,14 @@ func cargoDelivery(c *gin.Context) {
 	outputPath := filepath.Join(outputDir, fileName)
 	out, err := os.Create(outputPath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file", "details": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
 		return
 	}
 	defer out.Close()
 
 	// Copy the uploaded file to the output file
 	if _, err := io.Copy(out, file); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write file", "details": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write file"})
 		return
 	}
 
@@ -899,7 +1016,7 @@ func cargoDelivery(c *gin.Context) {
 		RetryCount: 0,
 	}
 	if err := db.Create(&fileMetadata).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata"})
 		return
 	}
 
